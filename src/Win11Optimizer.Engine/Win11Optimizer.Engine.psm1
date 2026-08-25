@@ -615,6 +615,16 @@ function Get-OptimizerLogPath {
 
 #endregion
 
+# Shared\ holds the plumbing more than one detector needs: the registry uninstall
+# walk, the normalised installed-app record, the match-pattern dialect and the
+# scan-result wrapper (promoted out of OemBloatware.ps1 by chunk P2-C3). It is
+# dot-sourced FIRST -- detector files reference its module-scope constants at
+# dot-source time, so load order matters.
+$sharedFiles = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Shared') -Filter '*.ps1' -File -ErrorAction SilentlyContinue)
+foreach ($sharedFile in $sharedFiles) {
+    . $sharedFile.FullName
+}
+
 # Detector chunks (P2-C1..C4) drop one file per sweep category in Detectors\ and
 # add their public function names to the export list below and to
 # FunctionsToExport in Win11Optimizer.Engine.psd1.
@@ -639,4 +649,13 @@ Export-ModuleMember -Function @(
     'Get-KnownBloatwareList'
     'Find-KnownBloatware'
     'Invoke-OemBloatwareScan'
+
+    # P2-C3 — shared inventory (Shared/Inventory.ps1)
+    'Get-RegistryInstalledApp'
+
+    # P2-C3 — UnusedApp detector (Detectors/UnusedApps.ps1)
+    'Get-UnusedAppExclusionList'
+    'Get-AppUsageClassification'
+    'Find-UnusedApp'
+    'Invoke-UnusedAppScan'
 )

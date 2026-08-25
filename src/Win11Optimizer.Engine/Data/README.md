@@ -144,7 +144,7 @@ how much they look like bloat:
 `tests/OemBloatware.Tests.ps1` asserts a sample of these never appear in the file,
 including the retail editions of the two vendors the carve-out entries come from.
 
-### Provenance reaches the user two ways
+### Provenance reaches the user two ways (`known-bloatware.json`)
 
 `evidenceSource` distinguishes an identifier observed on real hardware (`measured`) from
 one taken from a published list (`public-list`) and never verified here. Both routes out
@@ -156,3 +156,83 @@ of the detector exist so nothing has to string-match prose to learn this:
 - **In plain words**, for a human reading the evidence: a Finding from a `public-list`
   entry gains an Evidence line saying the identifier has never been observed on real
   hardware. A `measured` entry gains no corresponding line — **silence means measured.**
+
+---
+
+## `unused-app-exclusions.json`
+
+The curated exclusion list behind the `UnusedApp` detector (chunk P2-C3). It is the
+inverse of `known-bloatware.json`: that file says "this may be offered for removal",
+this one says **"this must never be flagged as unused, whatever its usage signals
+say."**
+
+It exists because large classes of software are never launched by a user at all —
+runtimes, drivers, firmware-update utilities, security and anti-cheat, OS and shell
+components, background services and sync clients. Any usage heuristic reads every one
+of them as untouched. Flagging a Visual C++ redistributable as "you never open this"
+is the exact failure that discredits tools in this category, and on the development
+machine 24 of 140 uninstall entries are Visual C++ redistributables alone.
+
+Loaded by `Get-UnusedAppExclusionList`, which validates every rule below and
+**throws** on any violation — the same treatment `Get-KnownBloatwareList` gets, for
+the same reason. A list that silently failed to load would yield zero exclusions,
+which looks like a machine with nothing to exclude.
+
+### Entry shape
+
+```jsonc
+{
+  "id": "msvc-redistributable",     // required, unique, stable
+  "displayName": "…",               // required — what the entry covers
+  "class": "runtime",               // required — one of the six classes below
+  "reason": "Why software of this kind cannot be judged by a usage heuristic.",
+  "note": "…",                      // optional, for maintainers; not shown to the user
+  "match": { … }                    // required, at least one rule
+}
+```
+
+### Classes
+
+A closed set. A typo fails the load rather than quietly demoting an entry.
+
+| class            | covers                                                      |
+| ---------------- | ----------------------------------------------------------- |
+| `runtime`        | redistributables, frameworks, interpreters, prerequisites   |
+| `driver`         | drivers and driver components                               |
+| `driver-utility` | firmware/driver-update and device-control utilities         |
+| `security`       | antivirus, endpoint security, anti-cheat, VPN clients       |
+| `os-component`   | shell, sign-in, settings, the Store                         |
+| `background`     | services, agents, sync clients — nothing to launch          |
+
+### Match rules — same dialect, one deliberate difference
+
+The four match fields and the pattern syntax are exactly the ones
+`known-bloatware.json` uses, enforced by the same primitives in
+`Shared/Inventory.ps1` (case-insensitive ordinal; exact string, or a prefix of at
+least 6 characters followed by a single trailing `*`; nothing else is special).
+
+The one difference: **`registryPublisher` stands alone here**, where on the
+whitelist it is only ever an AND-guard. The polarity of the two lists is opposite.
+On the whitelist, matching a whole vendor would be a safety claim about software the
+tool offers to delete. Here, matching a whole vendor only ever means "never flag
+this", so over-matching costs a missed finding — the safe direction — and the entry
+can say something honest and broad like "every NVIDIA-published uninstall entry on a
+Windows machine is the driver, one of its components, or the app that updates it."
+
+The same logic applies to unverified identifiers. On the whitelist they need a
+visible `evidenceSource` because a wrong one could match the wrong product; here a
+wrong identifier simply matches nothing. Entries carrying identifiers taken from
+published lists rather than seen on real hardware say so in `note`.
+
+### What belongs on this list
+
+The "what must never go on the whitelist" section above is, almost exactly, the
+list of what **must** be here. Anything named there — OS components, the Store,
+security software, drivers, runtimes, OEM firmware/driver-update utilities — belongs
+on this list, and the security carve-out that lets the whitelist name an OEM trial
+edition **does not extend to this detector**: security software is never flagged as
+unused, full stop.
+
+An app can legitimately appear on both lists in different roles. Being excluded here
+does not stop `known-bloatware.json` producing an `OemBloatware` Finding for the same
+app; the two detectors stay independent and grouping is P4-C1's job.

@@ -33,6 +33,15 @@
         'Get-KnownBloatwareList'
         'Find-KnownBloatware'
         'Invoke-OemBloatwareScan'
+
+        # P2-C3 — shared inventory
+        'Get-RegistryInstalledApp'
+
+        # P2-C3 — UnusedApp detector
+        'Get-UnusedAppExclusionList'
+        'Get-AppUsageClassification'
+        'Find-UnusedApp'
+        'Invoke-UnusedAppScan'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

@@ -11,6 +11,12 @@
     on. Win32_Product / WMI is deliberately not used anywhere: it triggers an MSI
     reconfiguration pass across every other installed MSI application.
 
+    Chunk P2-C3 moved the parts of this file that were never OEM-specific into
+    Shared\Inventory.ps1 -- the registry uninstall walk, the normalised
+    installed-app record, the match-pattern dialect and the scan-result wrapper.
+    Behaviour here is unchanged; the second detector to need them shares them
+    rather than growing a second copy.
+
     Public surface (registered in the .psm1 export list and the .psd1 manifest):
       Get-KnownBloatwareList   load + validate the curated whitelist
       Find-KnownBloatware      pure matcher: installed apps + whitelist -> Findings
@@ -21,18 +27,15 @@
 # dot-sources it, but resolves to the module folder once the functions are called.
 $script:OemBloatwareDataRoot = Join-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -ChildPath 'Data'
 
-# The three inventory sources, in the order they are reported.
-$script:OemSourceAppx        = 'AppxPackage'
-$script:OemSourceProvisioned = 'AppxProvisionedPackage'
-$script:OemSourceRegistry    = 'RegistryUninstall'
+# The three inventory sources, the pattern dialect, the normalised installed-app
+# record and the scan-result wrapper now live in Shared\Inventory.ps1 -- promoted
+# there by chunk P2-C3 so the unused-app detector shares one registry walk and one
+# result shape with this one. This file still owns everything whitelist-specific.
 
 # Whitelist match fields, and which installed-app property each is compared against.
 # Anything outside this set is rejected at load time so a typo cannot silently
 # disable a whitelist entry.
 $script:OemMatchFields = @('appxPackageName', 'appxPackageFamilyName', 'registryDisplayName', 'registryPublisher')
-
-# Minimum literal prefix in front of a trailing '*'. See Data\README.md.
-$script:OemMinimumPatternPrefix = 6
 
 # The only accepted values of an entry's optional 'sensitiveClass'. This is a
 # closed set on purpose: a typo must fail the load rather than quietly downgrade
@@ -60,166 +63,11 @@ $script:OemPublicListEvidenceText   = 'Provenance: this whitelist entry comes fr
 $script:OemSecurityTrialClass       = 'security-trial'
 $script:OemSecurityTrialReasonWords = @('trial', 'nagware')
 
+# Kept as this detector's own type tags. New-ScanResult / New-ScanSource put the
+# shared 'Win11Optimizer.ScanResult' / '.ScanSource' tag on the object too, so
+# these stay a superset of what P2-C1's callers and tests already gate on.
 $script:OemScanResultTypeName   = 'Win11Optimizer.OemScanResult'
 $script:OemScanSourceTypeName   = 'Win11Optimizer.OemScanSource'
-$script:OemInstalledAppTypeName = 'Win11Optimizer.InstalledApp'
-
-#region Internal helpers
-
-function Get-OemPropertyValue {
-    # Strict-mode-safe property read. The module runs under Set-StrictMode -Version
-    # Latest, where touching a property that does not exist on a PSCustomObject
-    # throws -- and inventory objects legitimately arrive with fields missing.
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [AllowNull()] $InputObject,
-        [Parameter(Mandatory)] [string] $Name,
-        [Parameter()] $Default = $null
-    )
-
-    if ($null -eq $InputObject) { return $Default }
-
-    $property = $InputObject.PSObject.Properties[$Name]
-    if ($null -eq $property) { return $Default }
-    if ($null -eq $property.Value) { return $Default }
-
-    $property.Value
-}
-
-function Assert-OemPattern {
-    # Enforces the deliberately tiny pattern syntax documented in Data\README.md:
-    # an exact string, or a prefix of at least $OemMinimumPatternPrefix characters
-    # followed by exactly one trailing '*'. Nothing else is a wildcard.
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string] $Pattern,
-        [Parameter(Mandatory)] [string] $Context
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Pattern)) {
-        throw "$Context : pattern is empty."
-    }
-
-    $starCount = @($Pattern.ToCharArray() | Where-Object { $_ -eq '*' }).Count
-    if ($starCount -eq 0) { return }
-
-    if ($starCount -gt 1) {
-        throw "$Context : pattern '$Pattern' contains more than one '*'. Only a single trailing '*' is allowed."
-    }
-
-    if ($Pattern[$Pattern.Length - 1] -ne '*') {
-        throw "$Context : pattern '$Pattern' uses '*' somewhere other than the last character. Only a single trailing '*' is allowed."
-    }
-
-    $prefix = $Pattern.Substring(0, $Pattern.Length - 1)
-    if ($prefix.Length -lt $script:OemMinimumPatternPrefix) {
-        throw "$Context : pattern '$Pattern' has a literal prefix shorter than $($script:OemMinimumPatternPrefix) characters. A whitelist entry is a safety claim; broad prefixes are not allowed."
-    }
-}
-
-function Test-OemPatternMatch {
-    # The matching primitive. Case-insensitive ordinal; exact unless the pattern
-    # ends in '*', in which case it is a prefix test. Deliberately not -like, so
-    # '?', '[' and ']' stay literal.
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param(
-        [Parameter(Mandatory)] [string] $Pattern,
-        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Value
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-
-    if ($Pattern.EndsWith('*')) {
-        $prefix = $Pattern.Substring(0, $Pattern.Length - 1)
-        return $Value.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
-    }
-
-    [string]::Equals($Pattern, $Value, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Test-OemAnyPatternMatch {
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param(
-        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [string[]] $Pattern,
-        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Value
-    )
-
-    if ($null -eq $Pattern -or $Pattern.Count -eq 0) { return $false }
-    foreach ($candidate in $Pattern) {
-        if (Test-OemPatternMatch -Pattern $candidate -Value $Value) { return $true }
-    }
-    $false
-}
-
-function New-OemInstalledApp {
-    # Normalized inventory record. Every property is always present (even when
-    # null) so downstream code and the test suite can rely on the shape.
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [string] $Source,
-        [Parameter(Mandatory)] [string] $Id,
-        [Parameter()] [AllowNull()] [string] $Name,
-        [Parameter()] [AllowNull()] [string] $DisplayName,
-        [Parameter()] [AllowNull()] [string] $PackageFamilyName,
-        [Parameter()] [AllowNull()] [string] $Publisher,
-        [Parameter()] [AllowNull()] [string] $Version,
-        [Parameter()] [AllowNull()] [string] $UninstallString,
-        [Parameter()] [AllowNull()] [string] $Detail
-    )
-
-    [pscustomobject]@{
-        PSTypeName        = $script:OemInstalledAppTypeName
-        Source            = $Source
-        Id                = $Id
-        Name              = $Name
-        DisplayName       = $DisplayName
-        PackageFamilyName = $PackageFamilyName
-        Publisher         = $Publisher
-        Version           = $Version
-        UninstallString   = $UninstallString
-        Detail            = $Detail
-    }
-}
-
-function ConvertTo-OemPackageFamilyName {
-    # Derives Name_PublisherId from a full package name
-    # (Name_Version_Architecture_ResourceId_PublisherId). Provisioned packages only
-    # expose the full name, so this is how the two Appx sources become comparable.
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $PackageFullName
-    )
-
-    if ([string]::IsNullOrWhiteSpace($PackageFullName)) { return $null }
-    $parts = $PackageFullName.Split('_')
-    if ($parts.Count -lt 2) { return $null }
-    '{0}_{1}' -f $parts[0], $parts[$parts.Count - 1]
-}
-
-function New-OemScanSource {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [ValidateSet('Succeeded', 'Skipped', 'Failed')] [string] $Status,
-        [Parameter()] [AllowNull()] [string] $Reason,
-        [Parameter()] [int] $ItemCount = 0,
-        [Parameter()] [double] $DurationSeconds = 0
-    )
-
-    [pscustomobject]@{
-        PSTypeName      = $script:OemScanSourceTypeName
-        Name            = $Name
-        Status          = $Status
-        Reason          = $Reason
-        ItemCount       = $ItemCount
-        DurationSeconds = $DurationSeconds
-    }
-}
-
-#endregion
 
 #region Inventory sources (all read-only)
 
@@ -229,18 +77,18 @@ function Get-OemAppxPackageItem {
     param()
 
     foreach ($package in @(Get-AppxPackage -ErrorAction Stop)) {
-        $name = [string](Get-OemPropertyValue -InputObject $package -Name 'Name')
+        $name = [string](Get-OptimizerProperty -InputObject $package -Name 'Name')
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
 
-        $familyName = [string](Get-OemPropertyValue -InputObject $package -Name 'PackageFamilyName')
-        $fullName   = [string](Get-OemPropertyValue -InputObject $package -Name 'PackageFullName')
-        $version    = [string](Get-OemPropertyValue -InputObject $package -Name 'Version')
-        $publisher  = [string](Get-OemPropertyValue -InputObject $package -Name 'Publisher')
+        $familyName = [string](Get-OptimizerProperty -InputObject $package -Name 'PackageFamilyName')
+        $fullName   = [string](Get-OptimizerProperty -InputObject $package -Name 'PackageFullName')
+        $version    = [string](Get-OptimizerProperty -InputObject $package -Name 'Version')
+        $publisher  = [string](Get-OptimizerProperty -InputObject $package -Name 'Publisher')
 
         $identifier = $familyName
         if ([string]::IsNullOrWhiteSpace($identifier)) { $identifier = $name }
 
-        New-OemInstalledApp -Source $script:OemSourceAppx `
+        New-InstalledApp -Source $script:SourceAppx `
             -Id $identifier `
             -Name $name `
             -DisplayName $name `
@@ -260,71 +108,29 @@ function Get-OemProvisionedAppxItem {
     param()
 
     foreach ($package in @(Get-AppxProvisionedPackage -Online -ErrorAction Stop)) {
-        $fullName = [string](Get-OemPropertyValue -InputObject $package -Name 'PackageName')
-        $name     = [string](Get-OemPropertyValue -InputObject $package -Name 'DisplayName')
+        $fullName = [string](Get-OptimizerProperty -InputObject $package -Name 'PackageName')
+        $name     = [string](Get-OptimizerProperty -InputObject $package -Name 'DisplayName')
 
         if ([string]::IsNullOrWhiteSpace($name) -and -not [string]::IsNullOrWhiteSpace($fullName)) {
             $name = $fullName.Split('_')[0]
         }
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
 
-        $familyName = ConvertTo-OemPackageFamilyName -PackageFullName $fullName
+        $familyName = ConvertTo-OptimizerPackageFamilyName -PackageFullName $fullName
         $identifier = $familyName
         if ([string]::IsNullOrWhiteSpace($identifier)) { $identifier = $name }
 
-        New-OemInstalledApp -Source $script:OemSourceProvisioned `
+        New-InstalledApp -Source $script:SourceProvisioned `
             -Id $identifier `
             -Name $name `
             -DisplayName $name `
             -PackageFamilyName $familyName `
-            -Publisher ([string](Get-OemPropertyValue -InputObject $package -Name 'PublisherId')) `
-            -Version ([string](Get-OemPropertyValue -InputObject $package -Name 'Version')) `
+            -Publisher ([string](Get-OptimizerProperty -InputObject $package -Name 'PublisherId')) `
+            -Version ([string](Get-OptimizerProperty -InputObject $package -Name 'Version')) `
             -Detail $fullName
     }
 }
 
-function Get-OemRegistryUninstallItem {
-    # Source 3: traditional Win32 apps. All three uninstall views are read -- leaving
-    # out WOW6432Node hides most 32-bit software, which on a real machine is most of
-    # the OEM-installed software.
-    [CmdletBinding()]
-    param(
-        [Parameter()] [string[]] $Path = @(
-            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
-            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
-            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
-        )
-    )
-
-    foreach ($root in $Path) {
-        if (-not (Test-Path -LiteralPath $root)) {
-            Write-Verbose "Uninstall view not present, skipping: $root"
-            continue
-        }
-
-        foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction Stop)) {
-            $values = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
-            if ($null -eq $values) { continue }
-
-            $displayName = [string](Get-OemPropertyValue -InputObject $values -Name 'DisplayName')
-            if ([string]::IsNullOrWhiteSpace($displayName)) { continue }
-
-            $uninstall = [string](Get-OemPropertyValue -InputObject $values -Name 'QuietUninstallString')
-            if ([string]::IsNullOrWhiteSpace($uninstall)) {
-                $uninstall = [string](Get-OemPropertyValue -InputObject $values -Name 'UninstallString')
-            }
-
-            New-OemInstalledApp -Source $script:OemSourceRegistry `
-                -Id $key.Name `
-                -Name $displayName `
-                -DisplayName $displayName `
-                -Publisher ([string](Get-OemPropertyValue -InputObject $values -Name 'Publisher')) `
-                -Version ([string](Get-OemPropertyValue -InputObject $values -Name 'DisplayVersion')) `
-                -UninstallString $uninstall `
-                -Detail $root
-        }
-    }
-}
 
 #endregion
 
@@ -379,7 +185,7 @@ function Get-KnownBloatwareList {
         throw "Known-bloatware whitelist '$Path' is not valid JSON: $($_.Exception.Message)"
     }
 
-    # Read the property directly rather than through Get-OemPropertyValue: an empty
+    # Read the property directly rather than through Get-OptimizerProperty: an empty
     # JSON array would unroll to nothing on the way out of a function and be
     # indistinguishable from a missing 'entries' key.
     $entriesProperty = $document.PSObject.Properties['entries']
@@ -397,11 +203,11 @@ function Get-KnownBloatwareList {
 
     foreach ($entry in $entries) {
         $index++
-        $id = [string](Get-OemPropertyValue -InputObject $entry -Name 'id')
+        $id = [string](Get-OptimizerProperty -InputObject $entry -Name 'id')
         $where = if ([string]::IsNullOrWhiteSpace($id)) { "entry #$index" } else { "entry '$id'" }
 
         foreach ($required in 'id', 'displayName', 'vendor', 'reason') {
-            $value = [string](Get-OemPropertyValue -InputObject $entry -Name $required)
+            $value = [string](Get-OptimizerProperty -InputObject $entry -Name $required)
             if ([string]::IsNullOrWhiteSpace($value)) {
                 throw "Known-bloatware whitelist '$Path': $where is missing a non-empty '$required'. Every entry is a safety claim and must say who it comes from and why it is bloat."
             }
@@ -436,7 +242,7 @@ function Get-KnownBloatwareList {
             $sensitiveClass = @($script:OemSensitiveClasses | Where-Object { $_ -eq $declaredClass })[0]
         }
 
-        $match = Get-OemPropertyValue -InputObject $entry -Name 'match'
+        $match = Get-OptimizerProperty -InputObject $entry -Name 'match'
         if ($null -eq $match) {
             throw "Known-bloatware whitelist '$Path': $where has no 'match' block."
         }
@@ -449,7 +255,7 @@ function Get-KnownBloatwareList {
                 throw "Known-bloatware whitelist '$Path': $where declares unknown match field '$field'. Allowed: $($script:OemMatchFields -join ', ')."
             }
 
-            $patterns = @(@(Get-OemPropertyValue -InputObject $match -Name $field -Default @()) |
+            $patterns = @(@(Get-OptimizerProperty -InputObject $match -Name $field -Default @()) |
                 Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                 ForEach-Object { [string]$_ })
 
@@ -458,7 +264,7 @@ function Get-KnownBloatwareList {
             }
 
             foreach ($pattern in $patterns) {
-                Assert-OemPattern -Pattern $pattern -Context "Known-bloatware whitelist '$Path', $where, field '$field'"
+                Assert-OptimizerPattern -Pattern $pattern -Context "Known-bloatware whitelist '$Path', $where, field '$field'"
             }
 
             $rules[$field] = $patterns
@@ -487,7 +293,7 @@ function Get-KnownBloatwareList {
                 }
             }
 
-            $reason = [string](Get-OemPropertyValue -InputObject $entry -Name 'reason')
+            $reason = [string](Get-OptimizerProperty -InputObject $entry -Name 'reason')
             $saysTrial = $false
             foreach ($word in $script:OemSecurityTrialReasonWords) {
                 if ($reason.IndexOf($word, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $saysTrial = $true }
@@ -500,13 +306,13 @@ function Get-KnownBloatwareList {
         [pscustomobject]@{
             PSTypeName            = 'Win11Optimizer.KnownBloatwareEntry'
             Id                    = $id
-            DisplayName           = [string](Get-OemPropertyValue -InputObject $entry -Name 'displayName')
-            Vendor                = [string](Get-OemPropertyValue -InputObject $entry -Name 'vendor')
-            Reason                = [string](Get-OemPropertyValue -InputObject $entry -Name 'reason')
-            EvidenceSource        = [string](Get-OemPropertyValue -InputObject $entry -Name 'evidenceSource' -Default 'unspecified')
+            DisplayName           = [string](Get-OptimizerProperty -InputObject $entry -Name 'displayName')
+            Vendor                = [string](Get-OptimizerProperty -InputObject $entry -Name 'vendor')
+            Reason                = [string](Get-OptimizerProperty -InputObject $entry -Name 'reason')
+            EvidenceSource        = [string](Get-OptimizerProperty -InputObject $entry -Name 'evidenceSource' -Default 'unspecified')
             RequiresConsent       = [bool] $requiresConsent
             SensitiveClass        = $sensitiveClass
-            Note                  = [string](Get-OemPropertyValue -InputObject $entry -Name 'note')
+            Note                  = [string](Get-OptimizerProperty -InputObject $entry -Name 'note')
             AppxPackageName       = [string[]] $rules['appxPackageName']
             AppxPackageFamilyName = [string[]] $rules['appxPackageFamilyName']
             RegistryDisplayName   = [string[]] $rules['registryDisplayName']
@@ -585,22 +391,22 @@ function Find-KnownBloatware {
     foreach ($app in @($InstalledApp)) {
         if ($null -eq $app) { continue }
 
-        $source     = [string](Get-OemPropertyValue -InputObject $app -Name 'Source')
-        $isAppx     = ($source -eq $script:OemSourceAppx -or $source -eq $script:OemSourceProvisioned)
-        $isRegistry = ($source -eq $script:OemSourceRegistry)
+        $source     = [string](Get-OptimizerProperty -InputObject $app -Name 'Source')
+        $isAppx     = ($source -eq $script:SourceAppx -or $source -eq $script:SourceProvisioned)
+        $isRegistry = ($source -eq $script:SourceRegistry)
 
         if (-not $isAppx -and -not $isRegistry) {
             Write-Verbose "Ignoring inventory record with unrecognized Source '$source'."
             continue
         }
 
-        $name        = [string](Get-OemPropertyValue -InputObject $app -Name 'Name')
-        $displayName = [string](Get-OemPropertyValue -InputObject $app -Name 'DisplayName')
-        $familyName  = [string](Get-OemPropertyValue -InputObject $app -Name 'PackageFamilyName')
-        $publisher   = [string](Get-OemPropertyValue -InputObject $app -Name 'Publisher')
-        $version     = [string](Get-OemPropertyValue -InputObject $app -Name 'Version')
-        $identifier  = [string](Get-OemPropertyValue -InputObject $app -Name 'Id')
-        $uninstall   = [string](Get-OemPropertyValue -InputObject $app -Name 'UninstallString')
+        $name        = [string](Get-OptimizerProperty -InputObject $app -Name 'Name')
+        $displayName = [string](Get-OptimizerProperty -InputObject $app -Name 'DisplayName')
+        $familyName  = [string](Get-OptimizerProperty -InputObject $app -Name 'PackageFamilyName')
+        $publisher   = [string](Get-OptimizerProperty -InputObject $app -Name 'Publisher')
+        $version     = [string](Get-OptimizerProperty -InputObject $app -Name 'Version')
+        $identifier  = [string](Get-OptimizerProperty -InputObject $app -Name 'Id')
+        $uninstall   = [string](Get-OptimizerProperty -InputObject $app -Name 'UninstallString')
 
         if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = $name }
         if ([string]::IsNullOrWhiteSpace($identifier)) { $identifier = $displayName }
@@ -612,24 +418,24 @@ function Find-KnownBloatware {
             $removalMethod = $null
 
             if ($isAppx) {
-                $appxPatterns   = [string[]](Get-OemPropertyValue -InputObject $entry -Name 'AppxPackageName' -Default @())
-                $familyPatterns = [string[]](Get-OemPropertyValue -InputObject $entry -Name 'AppxPackageFamilyName' -Default @())
+                $appxPatterns   = [string[]](Get-OptimizerProperty -InputObject $entry -Name 'AppxPackageName' -Default @())
+                $familyPatterns = [string[]](Get-OptimizerProperty -InputObject $entry -Name 'AppxPackageFamilyName' -Default @())
 
-                if ((Test-OemAnyPatternMatch -Pattern $appxPatterns -Value $name) -or
-                    (Test-OemAnyPatternMatch -Pattern $familyPatterns -Value $familyName)) {
+                if ((Test-OptimizerAnyPatternMatch -Pattern $appxPatterns -Value $name) -or
+                    (Test-OptimizerAnyPatternMatch -Pattern $familyPatterns -Value $familyName)) {
                     $hit = $true
                     $removalMethod = 'Appx'
                 }
             }
             else {
-                $namePatterns = [string[]](Get-OemPropertyValue -InputObject $entry -Name 'RegistryDisplayName' -Default @())
-                if (Test-OemAnyPatternMatch -Pattern $namePatterns -Value $displayName) {
+                $namePatterns = [string[]](Get-OptimizerProperty -InputObject $entry -Name 'RegistryDisplayName' -Default @())
+                if (Test-OptimizerAnyPatternMatch -Pattern $namePatterns -Value $displayName) {
                     # registryPublisher is an AND-guard, never a match of its own.
-                    $publisherPatterns = [string[]](Get-OemPropertyValue -InputObject $entry -Name 'RegistryPublisher' -Default @())
+                    $publisherPatterns = [string[]](Get-OptimizerProperty -InputObject $entry -Name 'RegistryPublisher' -Default @())
                     if ($null -eq $publisherPatterns -or $publisherPatterns.Count -lt 1) {
                         $hit = $true
                     }
-                    elseif (Test-OemAnyPatternMatch -Pattern $publisherPatterns -Value $publisher) {
+                    elseif (Test-OptimizerAnyPatternMatch -Pattern $publisherPatterns -Value $publisher) {
                         $hit = $true
                     }
                     if ($hit) { $removalMethod = 'RegistryUninstallString' }
@@ -638,12 +444,12 @@ function Find-KnownBloatware {
 
             if (-not $hit) { continue }
 
-            $entryId      = [string](Get-OemPropertyValue -InputObject $entry -Name 'Id')
-            $entryName    = [string](Get-OemPropertyValue -InputObject $entry -Name 'DisplayName')
-            $entryVendor  = [string](Get-OemPropertyValue -InputObject $entry -Name 'Vendor')
-            $entryReason  = [string](Get-OemPropertyValue -InputObject $entry -Name 'Reason')
-            $entrySource  = [string](Get-OemPropertyValue -InputObject $entry -Name 'EvidenceSource')
-            $entryConsent = [bool](Get-OemPropertyValue -InputObject $entry -Name 'RequiresConsent' -Default $false)
+            $entryId      = [string](Get-OptimizerProperty -InputObject $entry -Name 'Id')
+            $entryName    = [string](Get-OptimizerProperty -InputObject $entry -Name 'DisplayName')
+            $entryVendor  = [string](Get-OptimizerProperty -InputObject $entry -Name 'Vendor')
+            $entryReason  = [string](Get-OptimizerProperty -InputObject $entry -Name 'Reason')
+            $entrySource  = [string](Get-OptimizerProperty -InputObject $entry -Name 'EvidenceSource')
+            $entryConsent = [bool](Get-OptimizerProperty -InputObject $entry -Name 'RequiresConsent' -Default $false)
 
             $key = '{0}|{1}' -f $entryId.ToLowerInvariant(), $removalMethod
 
@@ -674,7 +480,7 @@ function Find-KnownBloatware {
             $record = $matched[$key]
             if (-not $record.Sources.Contains($source)) { $record.Sources.Add($source) }
 
-            if ($source -eq $script:OemSourceAppx) {
+            if ($source -eq $script:SourceAppx) {
                 $shown = $familyName
                 if ([string]::IsNullOrWhiteSpace($shown)) { $shown = $name }
                 $line = "Installed as a per-user Appx package: $shown"
@@ -684,8 +490,8 @@ function Find-KnownBloatware {
                 # identifier the Appx path takes.
                 if (-not [string]::IsNullOrWhiteSpace($familyName)) { $record.Id = $familyName }
             }
-            elseif ($source -eq $script:OemSourceProvisioned) {
-                $shown = [string](Get-OemPropertyValue -InputObject $app -Name 'Detail')
+            elseif ($source -eq $script:SourceProvisioned) {
+                $shown = [string](Get-OptimizerProperty -InputObject $app -Name 'Detail')
                 if ([string]::IsNullOrWhiteSpace($shown)) { $shown = $name }
                 $record.Evidence.Add("Provisioned for all users in the Windows image: $shown.")
             }
@@ -702,7 +508,7 @@ function Find-KnownBloatware {
     }
 
     foreach ($record in $matched.Values) {
-        if ($record.Sources.Contains($script:OemSourceAppx) -and $record.Sources.Contains($script:OemSourceProvisioned)) {
+        if ($record.Sources.Contains($script:SourceAppx) -and $record.Sources.Contains($script:SourceProvisioned)) {
             $record.Evidence.Add('Present both per-user and provisioned: clearing it fully needs both the per-user and the provisioned call.')
         }
 
@@ -810,12 +616,12 @@ function Invoke-OemBloatwareScan {
         $items = @(Get-OemAppxPackageItem)
         $timer.Stop()
         foreach ($item in $items) { $inventory.Add($item) }
-        $sources.Add((New-OemScanSource -Name $script:OemSourceAppx -Status 'Succeeded' `
+        $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceAppx -Status 'Succeeded' `
             -ItemCount $items.Count -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
     }
     catch {
         $timer.Stop()
-        $sources.Add((New-OemScanSource -Name $script:OemSourceAppx -Status 'Failed' `
+        $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceAppx -Status 'Failed' `
             -Reason "Enumerating per-user Appx packages failed: $($_.Exception.Message)" `
             -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
     }
@@ -824,7 +630,7 @@ function Invoke-OemBloatwareScan {
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     if (-not $isElevated) {
         $timer.Stop()
-        $sources.Add((New-OemScanSource -Name $script:OemSourceProvisioned -Status 'Skipped' `
+        $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceProvisioned -Status 'Skipped' `
             -Reason 'Not elevated. Reading provisioned (all-users) Appx packages requires administrator rights; re-run this scan as administrator to see them.' `
             -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
     }
@@ -833,7 +639,7 @@ function Invoke-OemBloatwareScan {
             $items = @(Get-OemProvisionedAppxItem)
             $timer.Stop()
             foreach ($item in $items) { $inventory.Add($item) }
-            $sources.Add((New-OemScanSource -Name $script:OemSourceProvisioned -Status 'Succeeded' `
+            $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceProvisioned -Status 'Succeeded' `
                 -ItemCount $items.Count -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
         }
         catch {
@@ -841,7 +647,7 @@ function Invoke-OemBloatwareScan {
             # servicing operation, or Windows Update mid-install. That is "this
             # source did not run", not a fatal scan error.
             $timer.Stop()
-            $sources.Add((New-OemScanSource -Name $script:OemSourceProvisioned -Status 'Failed' `
+            $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceProvisioned -Status 'Failed' `
                 -Reason "Reading provisioned Appx packages failed: $($_.Exception.Message) A servicing session may be in progress (for example a Windows Update install); try again later." `
                 -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
         }
@@ -852,15 +658,15 @@ function Invoke-OemBloatwareScan {
     try {
         $registryArguments = @{}
         if ($RegistryPath) { $registryArguments['Path'] = $RegistryPath }
-        $items = @(Get-OemRegistryUninstallItem @registryArguments)
+        $items = @(Get-RegistryInstalledApp @registryArguments)
         $timer.Stop()
         foreach ($item in $items) { $inventory.Add($item) }
-        $sources.Add((New-OemScanSource -Name $script:OemSourceRegistry -Status 'Succeeded' `
+        $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceRegistry -Status 'Succeeded' `
             -ItemCount $items.Count -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
     }
     catch {
         $timer.Stop()
-        $sources.Add((New-OemScanSource -Name $script:OemSourceRegistry -Status 'Failed' `
+        $sources.Add((New-ScanSource -AdditionalTypeName $script:OemScanSourceTypeName -Name $script:SourceRegistry -Status 'Failed' `
             -Reason "Reading the registry uninstall views failed: $($_.Exception.Message)" `
             -DurationSeconds ([math]::Round($timer.Elapsed.TotalSeconds, 3))))
     }
@@ -885,40 +691,23 @@ function Invoke-OemBloatwareScan {
 
     $defaultWhitelistPath = Join-Path -Path $script:OemBloatwareDataRoot -ChildPath 'known-bloatware.json'
 
-    $result = [pscustomobject]@{
-        PSTypeName      = $script:OemScanResultTypeName
-        Detector        = 'OemBloatware'
-        Category        = 'OemBloatware'
-        StartedUtc      = $startedUtc
-        DurationSeconds = [math]::Round($totalTimer.Elapsed.TotalSeconds, 3)
-        IsElevated      = $isElevated
-        WhitelistPath   = $(if ($WhitelistPath) { $WhitelistPath } else { $defaultWhitelistPath })
-        WhitelistCount  = $whitelist.Count
-        InventoryCount  = $inventory.Count
-        Sources         = [psobject[]] $sources.ToArray()
-        Findings        = [psobject[]] $findings
-    }
-
-    # Derived and read-only, the same pattern as Finding.SafetyLabel: completeness
-    # cannot be set by a caller and cannot drift from what the sources reported.
-    $result | Add-Member -MemberType ScriptProperty -Name 'IsComplete' -Value {
-        @($this.Sources | Where-Object { $_.Status -ne 'Succeeded' }).Count -eq 0
-    }
-
-    $result | Add-Member -MemberType ScriptProperty -Name 'IncompleteReason' -Value {
-        $unfinished = @($this.Sources | Where-Object { $_.Status -ne 'Succeeded' })
-        if ($unfinished.Count -eq 0) { return $null }
-        ($unfinished | ForEach-Object { "$($_.Name) [$($_.Status)]: $($_.Reason)" }) -join ' '
-    }
-
-    $result | Add-Member -MemberType ScriptProperty -Name 'SummaryText' -Value {
-        if ($this.IsComplete) {
-            "Complete scan of $($this.InventoryCount) installed items: $(@($this.Findings).Count) known-bloatware findings."
-        }
-        else {
-            "PARTIAL scan of $($this.InventoryCount) installed items: $(@($this.Findings).Count) known-bloatware findings so far. $($this.IncompleteReason)"
-        }
-    }
+    # Shared wrapper (Shared\Inventory.ps1). It owns IsComplete / IncompleteReason
+    # / SummaryText and the INCOMPLETE warning, so no detector can forget one.
+    $result = New-ScanResult -Detector 'OemBloatware' -Category 'OemBloatware' `
+        -StartedUtc $startedUtc `
+        -DurationSeconds ([math]::Round($totalTimer.Elapsed.TotalSeconds, 3)) `
+        -IsElevated $isElevated `
+        -InventoryCount $inventory.Count `
+        -Source $sources.ToArray() `
+        -Finding $findings `
+        -ItemNoun 'installed items' `
+        -FindingNoun 'known-bloatware findings' `
+        -ScanLabel 'OEM bloatware scan' `
+        -TypeName $script:OemScanResultTypeName `
+        -AdditionalProperty ([ordered]@{
+            WhitelistPath  = $(if ($WhitelistPath) { $WhitelistPath } else { $defaultWhitelistPath })
+            WhitelistCount = $whitelist.Count
+        })
 
     Write-OptimizerLog -EventName 'OemScanCompleted' `
         -Level $(if ($result.IsComplete) { 'Info' } else { 'Warning' }) `
@@ -930,10 +719,6 @@ function Invoke-OemBloatwareScan {
             InventoryCount  = $result.InventoryCount
             DurationSeconds = $result.DurationSeconds
         })
-
-    if (-not $result.IsComplete) {
-        Write-Warning "OEM bloatware scan is INCOMPLETE -- this list is partial. $($result.IncompleteReason)"
-    }
 
     $result
 }

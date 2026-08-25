@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 1,
+  "description": "Software that a usage heuristic must never flag as unused. See Data/README.md, section 'unused-app-exclusions.json'. Curated by hand; every entry states why. Over-matching here costs a missed finding, which is the safe direction.",
+  "entries": [
+    {
+      "id": "msvc-redistributable",
+      "displayName": "Microsoft Visual C++ redistributables",
+      "class": "runtime",
+      "reason": "A redistributable runtime, not an application. Nobody launches it, so any usage heuristic reads it as unused; removing one breaks every program compiled against it. This machine carries 24 such entries.",
+      "match": { "registryDisplayName": ["Microsoft Visual C++*"] }
+    },
+    {
+      "id": "dotnet-runtime",
+      "displayName": ".NET runtimes and hosting bundles",
+      "class": "runtime",
+      "reason": "Runtime and shared framework, never launched directly. Removing one takes every .NET application on the machine with it.",
+      "match": {
+        "registryDisplayName": [
+          "Microsoft .NET*",
+          "Microsoft ASP.NET*",
+          "Microsoft Windows Desktop Runtime*",
+          "Windows Desktop Runtime*"
+        ]
+      }
+    },
+    {
+      "id": "edge-webview2-runtime",
+      "displayName": "Microsoft Edge WebView2 Runtime",
+      "class": "runtime",
+      "reason": "The embedded browser runtime a large number of desktop applications render their UI with. It has no window of its own and is never launched by a user.",
+      "match": { "registryDisplayName": ["Microsoft Edge WebView2 Runtime"] }
+    },
+    {
+      "id": "microsoft-gameinput",
+      "displayName": "Microsoft GameInput",
+      "class": "runtime",
+      "reason": "Input runtime installed by games. No UI, never launched; removing it costs controller support in whatever installed it.",
+      "match": { "registryDisplayName": ["Microsoft GameInput"] }
+    },
+    {
+      "id": "directx-runtime",
+      "displayName": "DirectX runtime components",
+      "class": "runtime",
+      "reason": "Graphics runtime installed by games and drivers. Never launched by a user.",
+      "match": { "registryDisplayName": ["DirectX*"] }
+    },
+    {
+      "id": "physx-runtime",
+      "displayName": "NVIDIA PhysX System Software",
+      "class": "runtime",
+      "reason": "Physics runtime installed alongside the graphics driver. No UI; games load it, users do not.",
+      "match": { "registryDisplayName": ["NVIDIA PhysX*"] }
+    },
+    {
+      "id": "game-launcher-prerequisites",
+      "displayName": "Game launcher prerequisite bundles",
+      "class": "runtime",
+      "reason": "Prerequisite runtime bundles written by game launchers (Epic and friends). They exist only to satisfy a dependency and are never launched.",
+      "match": {
+        "registryDisplayName": [
+          "Epic Games Launcher Prerequisites*",
+          "Launcher Prerequisites*"
+        ]
+      }
+    },
+    {
+      "id": "java-runtime",
+      "displayName": "Java runtime and updater",
+      "class": "runtime",
+      "reason": "A runtime plus its background updater. Java applications launch it; users do not, so a usage heuristic sees it as untouched however much Java code runs.",
+      "match": {
+        "registryDisplayName": ["Java 8 Update*", "Java Auto Updater", "Java Update*"]
+      }
+    },
+    {
+      "id": "python-install-components",
+      "displayName": "Python interpreter and its install components",
+      "class": "runtime",
+      "reason": "A Python install registers one entry per component (core interpreter, standard library, pip bootstrap, Tcl/Tk, test suite, documentation). None of them is a launchable application, and this machine carries eleven of them for one Python.",
+      "match": { "registryDisplayName": ["Python*"] }
+    },
+    {
+      "id": "nvidia-driver-stack",
+      "displayName": "NVIDIA driver, driver components and driver-update utility",
+      "class": "driver",
+      "reason": "Every NVIDIA-published uninstall entry on a Windows machine is the graphics driver, one of its containers/services/plugins, or the app that updates it. This machine carries twenty of them, none user-launched. Removing one costs the display driver or its update path.",
+      "match": {
+        "registryPublisher": ["NVIDIA Corporation"],
+        "appxPackageName": ["NVIDIACorp.*"]
+      }
+    },
+    {
+      "id": "amd-driver-stack",
+      "displayName": "AMD chipset, CPU and platform drivers",
+      "class": "driver",
+      "reason": "AMD-published uninstall entries are chipset, GPIO, PSP, SMBus and power-management drivers plus their installers. Eleven on this machine, none of them launchable.",
+      "match": {
+        "registryPublisher": ["Advanced Micro Devices, Inc."],
+        "appxPackageName": ["AdvancedMicroDevicesInc.*"]
+      }
+    },
+    {
+      "id": "intel-driver-stack",
+      "displayName": "Intel chipset and platform drivers",
+      "class": "driver",
+      "reason": "Chipset, management-engine and platform drivers. Not applications; removing one can cost the machine a bus or a power feature.",
+      "match": {
+        "registryPublisher": ["Intel Corporation", "Intel(R) Corporation", "Intel"],
+        "appxPackageName": ["AppUp.Intel*", "IntelCorporation*"]
+      },
+      "note": "The Store package names here come from published lists and have not been seen on this project's hardware; this machine is AMD. A wrong identifier in an exclusion list costs nothing -- it matches nothing."
+    },
+    {
+      "id": "realtek-driver-stack",
+      "displayName": "Realtek audio and network drivers",
+      "class": "driver",
+      "reason": "Audio and Ethernet drivers. Never launched; removing one costs sound or the network adapter.",
+      "match": {
+        "registryPublisher": ["Realtek", "Realtek Semiconductor Corp."],
+        "appxPackageName": ["RealtekSemiconductorCorp.*"]
+      }
+    },
+    {
+      "id": "ene-device-hal",
+      "displayName": "ENE Technology device HALs",
+      "class": "driver",
+      "reason": "Hardware abstraction layers for RGB, capture and storage peripherals, installed by the peripheral's software. Ten entries on this machine across three spellings of the same publisher, none of them a program a user opens.",
+      "match": {
+        "registryPublisher": ["ENE TECHNOLOGY INC.", "ENE Tech", "Ene Tech."]
+      }
+    },
+    {
+      "id": "oem-firmware-update-utility",
+      "displayName": "OEM firmware and driver-update utilities",
+      "class": "driver-utility",
+      "reason": "These update firmware and drivers. Treating one as bloat because nobody opens it is how a machine loses its fan curve or its BIOS-update path. Named in Data/README.md as software that must never be flagged.",
+      "match": {
+        "registryDisplayName": [
+          "MSI Center*",
+          "Lenovo Vantage*",
+          "Lenovo System Update*",
+          "Dell SupportAssist*",
+          "Dell Update*",
+          "Dell Command*",
+          "HP Support Assistant*",
+          "ASUS Armoury Crate*",
+          "Armoury Crate*",
+          "MyASUS*",
+          "Alienware Update*",
+          "Acer Care Center*"
+        ],
+        "appxPackageName": [
+          "9426MICRO-STARINTERNATION.*",
+          "B9ECED6F.ArmouryCrate*",
+          "E046963F.LenovoCompanion*",
+          "E046963F.LenovoSettings*",
+          "DellInc.DellSupportAssist*",
+          "DellInc.DellUpdate*",
+          "AD2F1837.HPSupportAssistant*",
+          "AD2F1837.HPPCHardwareDiagnostics*"
+        ]
+      },
+      "note": "9426MICRO-STARINTERNATION.MSICenter was measured on this project's hardware and is why the Store half of this entry exists: MSI Center ships as an Appx package, so the registryDisplayName patterns alone missed it and it came out as a candidate Finding. The Lenovo/Dell/HP/ASUS Store identifiers come from published lists and are unverified here."
+    },
+    {
+      "id": "peripheral-control-software",
+      "displayName": "Peripheral and storage device control software",
+      "class": "driver-utility",
+      "reason": "Device control services and dashboards for keyboards, mice, coolers and drives. They run as background services with no window a user opens, and they carry the firmware-update path for the device.",
+      "match": {
+        "registryPublisher": ["Corsair", "Western Digital Corporation", "Verbatim"],
+        "registryDisplayName": ["Corsair Device Control*", "WD_BLACK*", "WD Discovery*", "WD Drive Utilities*"]
+      }
+    },
+    {
+      "id": "antivirus-and-endpoint-security",
+      "displayName": "Antivirus and endpoint security products",
+      "class": "security",
+      "reason": "Security software is never flagged as unused, full stop (docs/STATE.md). It is deliberately invisible in normal use, so a usage heuristic sees every one of these as untouched. The security-trial carve-out that lets the OEM whitelist name a trial edition does NOT extend to this detector.",
+      "match": {
+        "registryDisplayName": [
+          "Malwarebytes*",
+          "Bitdefender*",
+          "Kaspersky*",
+          "Norton*",
+          "McAfee*",
+          "Sophos*",
+          "Webroot*",
+          "F-Secure*",
+          "Trend Micro*",
+          "Avast Antivirus",
+          "Avast Free Antivirus",
+          "Avast Premium Security",
+          "AVG Antivirus",
+          "AVG Internet Security",
+          "ESET NOD32 Antivirus",
+          "ESET Internet Security",
+          "ESET Security",
+          "Windows Defender*",
+          "Microsoft Defender*"
+        ],
+        "appxPackageName": [
+          "Microsoft.SecHealthUI",
+          "Malwarebytes.*",
+          "Bitdefender.*",
+          "AVGTechnologies.*",
+          "AVASTSoftware.*"
+        ]
+      },
+      "note": "Malwarebytes.AntiMalware was measured on this project's hardware as a Store package, which the registryDisplayName patterns alone would have missed."
+    },
+    {
+      "id": "anti-cheat",
+      "displayName": "Game anti-cheat drivers and services",
+      "class": "security",
+      "reason": "Kernel-level anti-cheat installed by games. It has no user-facing window at all, so it reads as never used no matter how much the game is played, and removing it stops the game from launching.",
+      "match": {
+        "registryDisplayName": [
+          "Riot Vanguard",
+          "EasyAntiCheat*",
+          "Easy Anti-Cheat*",
+          "BattlEye*",
+          "EA AntiCheat*",
+          "FACEIT Anti-cheat*"
+        ]
+      }
+    },
+    {
+      "id": "vpn-clients",
+      "displayName": "VPN clients",
+      "class": "security",
+      "reason": "A VPN client is security software the user chose, and it spends most of its life as a background service and a tray icon rather than a window. Flagging one as unused is both wrong and the kind of wrong that discredits the tool.",
+      "match": {
+        "registryDisplayName": [
+          "Surfshark*",
+          "NordVPN*",
+          "ExpressVPN*",
+          "Mullvad VPN*",
+          "Proton VPN*",
+          "ProtonVPN*",
+          "Private Internet Access*",
+          "OpenVPN*",
+          "WireGuard*"
+        ]
+      }
+    },
+    {
+      "id": "windows-shell-components",
+      "displayName": "Windows shell and OS component packages",
+      "class": "os-component",
+      "reason": "Shell, sign-in, settings and system-UI packages. Most are never launched from a Start-menu tile at all, and removing one costs a piece of Windows itself.",
+      "match": {
+        "appxPackageName": [
+          "Microsoft.Windows.*",
+          "MicrosoftWindows.Client.*",
+          "MicrosoftWindows.UndockedDevKit",
+          "windows.immersivecontrolpanel",
+          "Microsoft.AAD.BrokerPlugin",
+          "Microsoft.AccountsControl",
+          "Microsoft.CredDialogHost",
+          "Microsoft.ECApp",
+          "Microsoft.LockApp",
+          "Microsoft.Win32WebViewHost",
+          "Microsoft.XboxGameCallableUI",
+          "Microsoft.AsyncTextService",
+          "Microsoft.BioEnrollment",
+          "MicrosoftCorporationII.WindowsSubsystemForLinux"
+        ],
+        "registryDisplayName": ["Windows Subsystem for Linux", "Microsoft Edge", "Microsoft Edge Update"]
+      }
+    },
+    {
+      "id": "appx-framework-packages",
+      "displayName": "Appx framework and runtime packages",
+      "class": "runtime",
+      "reason": "Framework packages other packages depend on (VCLibs, .NET Native, WinUI, WebView2, the app runtime). They have no entry point to launch, so no usage signal can ever exist for them.",
+      "match": {
+        "appxPackageName": [
+          "Microsoft.VCLibs.*",
+          "Microsoft.NET.Native.*",
+          "Microsoft.UI.Xaml.*",
+          "Microsoft.WindowsAppRuntime.*",
+          "Microsoft.WinAppRuntime.*",
+          "MicrosoftCorporationII.WinAppRuntime.*",
+          "Microsoft.Services.Store.Engagement",
+          "Microsoft.DirectXRuntime"
+        ]
+      }
+    },
+    {
+      "id": "store-and-app-installer",
+      "displayName": "Microsoft Store and App Installer",
+      "class": "os-component",
+      "reason": "The Store is how the user reinstalls anything this tool removes, and App Installer is the winget host. Both are named in Data/README.md as never-removable.",
+      "match": {
+        "appxPackageName": [
+          "Microsoft.WindowsStore",
+          "Microsoft.StorePurchaseApp",
+          "Microsoft.DesktopAppInstaller"
+        ]
+      }
+    },
+    {
+      "id": "background-sync-clients",
+      "displayName": "Background sync and cloud-storage clients",
+      "class": "background",
+      "reason": "A sync client does its job with no window open. It reads as unused precisely when it is working, and removing one can strand the only local copy of the user's files.",
+      "match": {
+        "registryDisplayName": [
+          "Microsoft OneDrive",
+          "Google Drive",
+          "Dropbox",
+          "DropboxUpdateHelper",
+          "Backup and Sync from Google",
+          "iCloud*",
+          "Nextcloud*",
+          "MEGAsync*"
+        ]
+      }
+    },
+    {
+      "id": "background-service-helpers",
+      "displayName": "Background services, agents and updater helpers",
+      "class": "background",
+      "reason": "Services, online-service backends and certificate/update helpers shipped alongside an application. They have no UI, so absence of usage evidence says nothing about them, and they are removed by uninstalling their parent rather than on their own.",
+      "match": {
+        "registryDisplayName": [
+          "Epic Online Services",
+          "CertsUpdater*",
+          "Google Update Helper",
+          "Microsoft Update Health Tools",
+          "Update for Windows*"
+        ]
+      }
+    }
+  ]
+}

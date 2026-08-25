@@ -6,11 +6,11 @@ One file per sweep category, added by the Phase 2 chunks in `docs/PLAN.md`:
 | --------------------- | ----- | -------------- | ----------- |
 | `OemBloatware.ps1`    | P2-C1, P2-C1a | `OemBloatware` | done |
 | `StartupItems.ps1`    | P2-C2 | `StartupItem`, `Service` | planned |
-| `UnusedApps.ps1`      | P2-C3 | `UnusedApp`    | planned     |
+| `UnusedApps.ps1`      | P2-C3 | `UnusedApp`    | done        |
 | `JunkFiles.ps1`       | P2-C4 | `JunkFile`     | planned     |
 
 Every `.ps1` in this folder is dot-sourced by `Win11Optimizer.Engine.psm1` at
-import time. A detector must:
+import time, **after** everything in `..\Shared\`. A detector must:
 
 - return only objects built by `New-Finding` (never a bare hashtable), and
 - add its public function names to the `Export-ModuleMember` list in the `.psm1`
@@ -37,3 +37,19 @@ Two more things `OemBloatware.ps1` established that later detectors should copy:
   attaches `WhitelistEntryId` with `Add-Member` after `New-Finding`, because a join key
   into the curated whitelist means nothing to the other three detectors. Add to the
   shared contract only what every category needs.
+
+Two more, added by chunk P2-C3:
+
+- **Do not write a second inventory walk.** `..\Shared\Inventory.ps1` owns the
+  registry uninstall walk (`Get-RegistryInstalledApp`, all three views), the
+  normalised installed-app record (`New-InstalledApp`), the match-pattern dialect
+  and the scan-result wrapper (`New-ScanResult` / `New-ScanSource`). Detectors
+  compose those. P2-C3 promoted them out of `OemBloatware.ps1` on their second use;
+  a detector that needs a per-detector field on an inventory record attaches it with
+  `Add-Member` in its own file, the way `Add-UnusedAppExecutableName` does.
+- **"No evidence of X" is never "not X".** A heuristic detector must distinguish
+  positive evidence of absence from absence of evidence, and report the second as a
+  counted, first-class outcome rather than acting on it. `UnusedApps.ps1` puts every
+  app in exactly one of `Used` / `Unused` / `Unknown` and the scan result reports all
+  three counts, so a scan that could not see usage is obviously distinguishable from
+  a scan that found nothing to flag. See `docs/handoff/04-unused-apps.report.md`.
