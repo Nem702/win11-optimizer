@@ -569,4 +569,9 @@ Export-ModuleMember -Function @(
     'Get-OptimizerLog'
     'Get-OptimizerLogPath'
     'Get-OptimizerLogRoot'
+
+    # P2-C1 — OemBloatware detector (Detectors/OemBloatware.ps1)
+    'Get-KnownBloatwareList'
+    'Find-KnownBloatware'
+    'Invoke-OemBloatwareScan'
 )

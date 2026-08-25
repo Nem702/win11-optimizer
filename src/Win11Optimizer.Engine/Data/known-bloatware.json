@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "description": "Curated known-bloatware whitelist for the OemBloatware detector (chunk P2-C1). A match here is the ONLY thing this project ever labels 'Safe to remove'. Matching rules and the review status of this list are documented in Data/README.md.",
+  "updated": "2026-08-24",
+  "entries": [
+    {
+      "id": "fileviewerpro-xlsx-spreadsheet",
+      "displayName": "XLSX Spreadsheet",
+      "vendor": "FileViewer Pro Inc.",
+      "reason": "Third-party freemium spreadsheet viewer delivered as a preinstalled Store app. It opens .xlsx files read-only and upsells a paid FileViewer Pro licence; Windows and any real spreadsheet application already cover the same file types.",
+      "evidenceSource": "measured",
+      "match": {
+        "appxPackageName": ["50236FileViewerProInc.XLSXSpreadsheet"]
+      }
+    },
+    {
+      "id": "microsoft-365-office-hub",
+      "displayName": "Microsoft 365 (Office) hub",
+      "vendor": "Microsoft Corporation",
+      "reason": "Preinstalled launcher/advertising stub for a Microsoft 365 subscription. It is not Office itself and installs nothing; removing it does not affect an installed Office or Microsoft 365 desktop suite.",
+      "evidenceSource": "measured",
+      "match": {
+        "appxPackageName": ["Microsoft.MicrosoftOfficeHub"]
+      }
+    },
+    {
+      "id": "microsoft-copilot",
+      "displayName": "Microsoft Copilot",
+      "vendor": "Microsoft Corporation",
+      "reason": "Preinstalled standalone Copilot assistant app. It is a normal removable app rather than a shell component, ships on consumer Windows 11 images without being asked for, and leaves no dependent OS feature behind when uninstalled.",
+      "evidenceSource": "measured",
+      "note": "Ships twice on this machine: as an Appx package AND as a system-level Win32 install under the Program Files (x86) Microsoft Copilot folder. Both match rules below are deliberate - the two installs need two different removal calls.",
+      "match": {
+        "appxPackageName": ["Microsoft.Copilot"],
+        "registryDisplayName": ["Copilot"],
+        "registryPublisher": ["Microsoft Corporation"]
+      }
+    },
+    {
+      "id": "microsoft-dev-home",
+      "displayName": "Dev Home",
+      "vendor": "Microsoft Corporation",
+      "reason": "Preinstalled developer dashboard that Microsoft stopped developing and removed from new Windows images in 2025. Nothing in the OS depends on it and it is not installed on request.",
+      "evidenceSource": "measured",
+      "match": {
+        "appxPackageName": ["Microsoft.Windows.DevHome"]
+      }
+    },
+    {
+      "id": "king-promotional-games",
+      "displayName": "King promotional games (Candy Crush and friends)",
+      "vendor": "King.com Limited",
+      "reason": "Promotional games pushed onto consumer Windows installs by the Windows content-delivery mechanism rather than chosen by the user. No OS feature depends on them.",
+      "evidenceSource": "public-list",
+      "match": {
+        "appxPackageName": ["king.com.*"]
+      }
+    },
+    {
+      "id": "dell-partner-promo",
+      "displayName": "Dell Partner Promo",
+      "vendor": "Dell Inc.",
+      "reason": "Advertising app on Dell factory images whose only function is to present partner offers and trial software.",
+      "evidenceSource": "public-list",
+      "match": {
+        "appxPackageName": ["DellInc.PartnerPromo"]
+      }
+    },
+    {
+      "id": "dell-customer-connect",
+      "displayName": "Dell Customer Connect",
+      "vendor": "Dell Inc.",
+      "reason": "Survey and marketing-prompt app on Dell factory images. It performs no maintenance, driver or support function.",
+      "evidenceSource": "public-list",
+      "match": {
+        "appxPackageName": ["DellInc.DellCustomerConnect"]
+      }
+    },
+    {
+      "id": "hp-jumpstarts",
+      "displayName": "HP JumpStarts",
+      "vendor": "HP Inc.",
+      "reason": "First-run onboarding and offer-promotion app on HP factory images. It is not the HP support, diagnostics or driver-update utility.",
+      "evidenceSource": "public-list",
+      "match": {
+        "appxPackageName": ["AD2F1837.HPJumpStarts"]
+      }
+    },
+    {
+      "id": "wildtangent-games",
+      "displayName": "WildTangent Games",
+      "vendor": "WildTangent",
+      "reason": "Preinstalled trial-game storefront bundled onto OEM factory images. It exists to sell game sessions and installs its own background updater.",
+      "evidenceSource": "public-list",
+      "match": {
+        "registryDisplayName": ["WildTangent*"],
+        "registryPublisher": ["WildTangent*"]
+      }
+    }
+  ]
+}
