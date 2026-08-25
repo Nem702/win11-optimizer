@@ -209,6 +209,69 @@ Describe 'Known-bloatware whitelist file' {
         $findings | Should -BeNullOrEmpty
     }
 
+    # --- chunk P2-C1a: the security-software carve-out -------------------------
+
+    It 'gives every security-trial entry requiresConsent and no wildcard in any field' {
+        # The whole safety case for naming security software at all rests on these
+        # two properties. The loader enforces them; this pins the shipped file, so a
+        # future edit cannot pass the loader while quietly relaxing the list itself.
+        $trials = @($script:Entries | Where-Object { $_.SensitiveClass -eq 'security-trial' })
+        $trials.Count | Should -BeGreaterThan 0 -Because 'the carve-out exists to be used; an empty one means the entries were lost in an edit'
+
+        foreach ($entry in $trials) {
+            $entry.RequiresConsent | Should -BeTrue -Because "entry '$($entry.Id)' must never be presentable as safe to remove"
+
+            $patterns = @($entry.AppxPackageName) + @($entry.AppxPackageFamilyName) +
+                        @($entry.RegistryDisplayName) + @($entry.RegistryPublisher)
+            foreach ($pattern in $patterns) {
+                $pattern | Should -Not -Match '\*' -Because "entry '$($entry.Id)' is security software: exact identifiers only, in every field"
+            }
+        }
+    }
+
+    It 'surfaces a shipped security-trial match at "Review needed", never "Safe to remove"' {
+        $trials = @($script:Entries | Where-Object { $_.SensitiveClass -eq 'security-trial' })
+
+        $apps = foreach ($entry in $trials) {
+            foreach ($name in @($entry.RegistryDisplayName)) {
+                New-TestApp -Source 'RegistryUninstall' `
+                    -Id "HKEY_LOCAL_MACHINE\SOFTWARE\Fake\Uninstall\$($entry.Id)" `
+                    -DisplayName $name -Publisher $entry.Vendor -UninstallString '"C:\fake\uninstall.exe" /S'
+            }
+        }
+
+        $findings = @(Find-KnownBloatware -InstalledApp @($apps) -KnownBloatwareEntry $script:Entries)
+        $findings.Count | Should -Be $trials.Count
+
+        foreach ($finding in $findings) {
+            $finding.Confidence      | Should -Be 'Known'
+            $finding.RequiresConsent | Should -BeTrue
+            $finding.SafetyLabel     | Should -Be 'Review needed'
+        }
+    }
+
+    It 'never matches a security product the user chose and paid for' {
+        # The carve-out lets the list name OEM trial/nagware editions by exact
+        # display name. These are the products on the other side of that line: real
+        # protection a user installed on purpose, including the retail editions of
+        # the very vendors the carve-out entries come from.
+        $apps = @(
+            New-TestApp -Source 'AppxPackage' -Id 'Malwarebytes.AntiMalware_x' -Name 'Malwarebytes.AntiMalware' -PackageFamilyName 'Malwarebytes.AntiMalware_x'
+            New-TestApp -Source 'AppxPackage' -Id 'Microsoft.SecHealthUI_8wekyb3d8bbwe' -Name 'Microsoft.SecHealthUI' -PackageFamilyName 'Microsoft.SecHealthUI_8wekyb3d8bbwe'
+            New-TestApp -Source 'RegistryUninstall' -Id 's1' -DisplayName 'Malwarebytes version 5.6.3.284' -Publisher 'Malwarebytes'
+            New-TestApp -Source 'RegistryUninstall' -Id 's2' -DisplayName 'Windows Defender' -Publisher 'Microsoft Corporation'
+            New-TestApp -Source 'RegistryUninstall' -Id 's3' -DisplayName 'Microsoft Defender for Endpoint' -Publisher 'Microsoft Corporation'
+            New-TestApp -Source 'RegistryUninstall' -Id 's4' -DisplayName 'McAfee Total Protection' -Publisher 'McAfee, LLC'
+            New-TestApp -Source 'RegistryUninstall' -Id 's5' -DisplayName 'McAfee LiveSafe' -Publisher 'McAfee, LLC'
+            New-TestApp -Source 'RegistryUninstall' -Id 's6' -DisplayName 'Norton 360' -Publisher 'Gen Digital Inc.'
+            New-TestApp -Source 'RegistryUninstall' -Id 's7' -DisplayName 'Norton AntiVirus Plus' -Publisher 'Gen Digital Inc.'
+            New-TestApp -Source 'RegistryUninstall' -Id 's8' -DisplayName 'Bitdefender Total Security' -Publisher 'Bitdefender'
+            New-TestApp -Source 'RegistryUninstall' -Id 's9' -DisplayName 'ESET Security' -Publisher 'ESET, spol. s r.o.'
+        )
+
+        @(Find-KnownBloatware -InstalledApp $apps -KnownBloatwareEntry $script:Entries) | Should -BeNullOrEmpty
+    }
+
     It 'never whitelists a Visual C++ redistributable or a driver by registry display name' {
         $apps = @(
             New-TestApp -Source 'RegistryUninstall' -Id 'k1' -DisplayName 'Microsoft Visual C++ v14 Redistributable (x64) - 14.51.36247' -Publisher 'Microsoft Corporation'
@@ -285,6 +348,77 @@ Describe 'Known-bloatware whitelist loading fails loudly' {
     It 'accepts a constrained trailing wildcard' {
         $path = New-TestWhitelist -Content '{ "entries": [ { "id": "x", "displayName": "X", "vendor": "V", "reason": "R", "match": { "appxPackageName": ["SomeVendor.Thing*"] } } ] }'
         @(Get-KnownBloatwareList -Path $path).Count | Should -Be 1
+    }
+
+    # --- chunk P2-C1a ----------------------------------------------------------
+    # Each rule gets its own test, and each asserts the message names the offending
+    # entry: a loader that throws without saying which of eleven entries is at fault
+    # turns a one-line fix into a hunt through the JSON.
+
+    It 'throws when requiresConsent is the string "true" rather than a JSON boolean' {
+        # "true" is truthy in PowerShell, so accepting it would leave the entry
+        # looking enforced while the Finding contract -- which fails closed on a
+        # non-boolean -- and the carve-out check disagreed about what it meant.
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "stringly-consent", "displayName": "X", "vendor": "V", "reason": "R", "requiresConsent": "true", "match": { "appxPackageName": ["Some.Package"] } } ] }'
+        { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage "*'stringly-consent'*JSON boolean*"
+    }
+
+    It 'accepts requiresConsent as a real JSON boolean' {
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "real-consent", "displayName": "X", "vendor": "V", "reason": "R", "requiresConsent": true, "match": { "appxPackageName": ["Some.Package"] } } ] }'
+        $entry = @(Get-KnownBloatwareList -Path $path)[0]
+        $entry.RequiresConsent | Should -BeOfType [bool]
+        $entry.RequiresConsent | Should -BeTrue
+    }
+
+    It 'defaults requiresConsent to false when the entry does not mention it' {
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "no-consent-key", "displayName": "X", "vendor": "V", "reason": "R", "match": { "appxPackageName": ["Some.Package"] } } ] }'
+        $entry = @(Get-KnownBloatwareList -Path $path)[0]
+        $entry.RequiresConsent | Should -BeOfType [bool]
+        $entry.RequiresConsent | Should -BeFalse
+        $entry.SensitiveClass  | Should -BeNullOrEmpty
+    }
+
+    It 'throws on an unknown sensitiveClass rather than treating it as an ordinary entry' {
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "odd-class", "displayName": "X", "vendor": "V", "reason": "R", "sensitiveClass": "security-suite", "match": { "appxPackageName": ["Some.Package"] } } ] }'
+        { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage "*'odd-class'*unknown 'sensitiveClass'*"
+    }
+
+    It 'throws when a security-trial entry does not require consent' {
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "trial-without-consent", "displayName": "X", "vendor": "V", "reason": "The preinstalled trial edition.", "sensitiveClass": "security-trial", "match": { "registryDisplayName": ["Vendor Security Scan"] } } ] }'
+        { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage "*'trial-without-consent'*requiresConsent*"
+    }
+
+    It 'throws when a security-trial entry wildcards its <Field> pattern' -ForEach @(
+        @{ Field = 'appxPackageName';       Rules = '"appxPackageName": ["VendorSecurity*"]' }
+        @{ Field = 'appxPackageFamilyName'; Rules = '"appxPackageFamilyName": ["VendorSecurity*"]' }
+        @{ Field = 'registryDisplayName';   Rules = '"registryDisplayName": ["Vendor Security*"]' }
+        @{ Field = 'registryPublisher';     Rules = '"registryDisplayName": ["Vendor Security Scan"], "registryPublisher": ["Vendor Inc*"]' }
+    ) {
+        # Every field, no exceptions. A prefix match on a security product is how a
+        # list that meant to catch the OEM trial catches the suite the user paid for.
+        $json = '{ "entries": [ { "id": "wildcarded-trial", "displayName": "X", "vendor": "V", "reason": "The preinstalled trial edition.", "requiresConsent": true, "sensitiveClass": "security-trial", "match": { ' + $Rules + ' } } ] }'
+        { Get-KnownBloatwareList -Path (New-TestWhitelist -Content $json) } |
+            Should -Throw -ExpectedMessage "*'wildcarded-trial'*'$Field'*"
+    }
+
+    It 'throws when a security-trial entry has an empty reason' {
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "reasonless-trial", "displayName": "X", "vendor": "V", "reason": "", "requiresConsent": true, "sensitiveClass": "security-trial", "match": { "registryDisplayName": ["Vendor Security Scan"] } } ] }'
+        { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage "*'reasonless-trial'*'reason'*"
+    }
+
+    It 'throws when a security-trial reason never says it is the trial edition' {
+        # The reason is what the user reads before approving a removal. For security
+        # software it has to state which edition is being flagged, so the check is
+        # structural rather than left to review discipline.
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "vague-trial", "displayName": "X", "vendor": "V", "reason": "It is unwanted software.", "requiresConsent": true, "sensitiveClass": "security-trial", "match": { "registryDisplayName": ["Vendor Security Scan"] } } ] }'
+        { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage "*'vague-trial'*trial*"
+    }
+
+    It 'accepts a well-formed security-trial entry' {
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "good-trial", "displayName": "X", "vendor": "V", "reason": "The preinstalled trial edition, not the paid product.", "requiresConsent": true, "sensitiveClass": "security-trial", "match": { "registryDisplayName": ["Vendor Security Scan"] } } ] }'
+        $entry = @(Get-KnownBloatwareList -Path $path)[0]
+        $entry.SensitiveClass  | Should -Be 'security-trial'
+        $entry.RequiresConsent | Should -BeTrue
     }
 }
 
@@ -504,6 +638,111 @@ Describe 'Find-KnownBloatware output contract' {
     }
 }
 
+Describe 'Find-KnownBloatware provenance and consent (chunk P2-C1a)' {
+
+    BeforeAll {
+        # One entry per provenance case, so each assertion has an unambiguous target.
+        $script:ProvenanceJson = @'
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "id": "provenance-measured",
+      "displayName": "Measured Fixture App",
+      "vendor": "Fabricated OEM Inc.",
+      "reason": "Test fixture entry: the identifier was observed on a real machine.",
+      "evidenceSource": "measured",
+      "match": { "appxPackageName": ["Fabricated.Measured"] }
+    },
+    {
+      "id": "provenance-public",
+      "displayName": "Public-List Fixture App",
+      "vendor": "Fabricated OEM Inc.",
+      "reason": "Test fixture entry: the identifier came from a published list.",
+      "evidenceSource": "public-list",
+      "match": { "appxPackageName": ["Fabricated.PublicList"] }
+    },
+    {
+      "id": "provenance-trial",
+      "displayName": "Fixture Security Trial",
+      "vendor": "Fabricated Security Inc.",
+      "reason": "Test fixture entry: the preinstalled trial edition, not the paid product.",
+      "evidenceSource": "public-list",
+      "requiresConsent": true,
+      "sensitiveClass": "security-trial",
+      "match": { "registryDisplayName": ["Fixture Security Scan"] }
+    }
+  ]
+}
+'@
+
+        $script:ProvenanceEntries = @(Get-KnownBloatwareList -Path (New-TestWhitelist -Content $script:ProvenanceJson))
+
+        $script:ProvenanceApps = @(
+            New-TestApp -Source 'AppxPackage' -Id 'Fabricated.Measured_x' -Name 'Fabricated.Measured' -PackageFamilyName 'Fabricated.Measured_x'
+            New-TestApp -Source 'AppxPackage' -Id 'Fabricated.PublicList_x' -Name 'Fabricated.PublicList' -PackageFamilyName 'Fabricated.PublicList_x'
+            New-TestApp -Source 'RegistryUninstall' -Id 'HKEY_LOCAL_MACHINE\SOFTWARE\Fake\Uninstall\FixtureSec' `
+                -DisplayName 'Fixture Security Scan' -Publisher 'Fabricated Security Inc.'
+        )
+
+        $script:ProvenanceFindings = @(Find-KnownBloatware -InstalledApp $script:ProvenanceApps -KnownBloatwareEntry $script:ProvenanceEntries)
+    }
+
+    It 'produced one finding per fixture entry to assert on' {
+        $script:ProvenanceFindings.Count | Should -Be 3
+    }
+
+    It 'carries WhitelistEntryId on every finding' {
+        foreach ($finding in $script:ProvenanceFindings) {
+            $finding.PSObject.Properties.Name | Should -Contain 'WhitelistEntryId'
+            $finding.WhitelistEntryId | Should -Not -BeNullOrEmpty
+        }
+
+        @($script:ProvenanceFindings.WhitelistEntryId | Sort-Object) |
+            Should -Be @('provenance-measured', 'provenance-public', 'provenance-trial')
+    }
+
+    It 'round-trips WhitelistEntryId as a join key back into the whitelist' {
+        # The point of the field: a caller reads provenance structurally instead of
+        # string-matching the evidence prose. Looking the id up must land on exactly
+        # one entry, and it must be the entry whose reason is in the evidence.
+        foreach ($finding in $script:ProvenanceFindings) {
+            $entry = @($script:ProvenanceEntries | Where-Object { $_.Id -eq $finding.WhitelistEntryId })
+            $entry.Count | Should -Be 1
+            $finding.Evidence | Should -Contain $entry[0].Reason
+        }
+    }
+
+    It 'says in plain words that a public-list identifier is unverified' {
+        $finding = @($script:ProvenanceFindings | Where-Object { $_.WhitelistEntryId -eq 'provenance-public' })[0]
+        ($finding.Evidence -join "`n") | Should -Match 'never been observed on real hardware'
+        ($finding.Evidence -join "`n") | Should -Match 'published bloatware list'
+    }
+
+    It 'stays silent for a measured identifier -- silence means measured' {
+        $finding = @($script:ProvenanceFindings | Where-Object { $_.WhitelistEntryId -eq 'provenance-measured' })[0]
+        ($finding.Evidence -join "`n") | Should -Not -Match 'never been observed on real hardware'
+    }
+
+    It 'gives a matched security-trial entry Known + RequiresConsent + "Review needed"' {
+        $finding = @($script:ProvenanceFindings | Where-Object { $_.WhitelistEntryId -eq 'provenance-trial' })[0]
+
+        $finding.Confidence      | Should -Be 'Known'
+        $finding.RequiresConsent | Should -BeTrue
+        $finding.SafetyLabel     | Should -Be 'Review needed'
+        $finding.RemovalMethod   | Should -Be 'RegistryUninstallString'
+        Test-Finding -InputObject $finding | Should -BeTrue
+    }
+
+    It 'leaves an ordinary entry at RequiresConsent = false and "Safe to remove"' {
+        foreach ($id in 'provenance-measured', 'provenance-public') {
+            $finding = @($script:ProvenanceFindings | Where-Object { $_.WhitelistEntryId -eq $id })[0]
+            $finding.RequiresConsent | Should -BeFalse
+            $finding.SafetyLabel     | Should -Be 'Safe to remove'
+        }
+    }
+}
+
 Describe 'Invoke-OemBloatwareScan result shape' {
 
     BeforeAll { $script:Scan = Invoke-OemBloatwareScan -WarningAction SilentlyContinue }
@@ -553,6 +792,14 @@ Describe 'Invoke-OemBloatwareScan result shape' {
             $finding.Category   | Should -Be 'OemBloatware'
             $finding.Confidence | Should -Be 'Known'
             @($finding.Evidence).Count | Should -BeGreaterThan 0
+        }
+    }
+
+    It 'gives every finding a WhitelistEntryId that resolves to exactly one entry' {
+        $entries = @(Get-KnownBloatwareList)
+        foreach ($finding in @($script:Scan.Findings)) {
+            $finding.WhitelistEntryId | Should -Not -BeNullOrEmpty
+            @($entries | Where-Object { $_.Id -eq $finding.WhitelistEntryId }).Count | Should -Be 1
         }
     }
 

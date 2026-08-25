@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 1,
-  "description": "Curated known-bloatware whitelist for the OemBloatware detector (chunk P2-C1). A match here is the ONLY thing this project ever labels 'Safe to remove'. Matching rules and the review status of this list are documented in Data/README.md.",
-  "updated": "2026-08-24",
+  "schemaVersion": 2,
+  "description": "Curated known-bloatware whitelist for the OemBloatware detector (chunks P2-C1 and P2-C1a). A match here is the only thing this project ever labels 'Safe to remove', and only when the entry does not also set requiresConsent. Matching rules, the sensitiveClass carve-out and the review status of this list are documented in Data/README.md.",
+  "updated": "2026-08-25",
   "entries": [
     {
       "id": "fileviewerpro-xlsx-spreadsheet",
@@ -95,6 +95,32 @@
       "match": {
         "registryDisplayName": ["WildTangent*"],
         "registryPublisher": ["WildTangent*"]
+      }
+    },
+    {
+      "id": "mcafee-security-scan-plus",
+      "displayName": "McAfee Security Scan Plus",
+      "vendor": "McAfee, LLC",
+      "reason": "The preinstalled McAfee trial/nagware scanner bundled onto OEM factory images and with third-party installers. It is not antivirus and provides no protection: it periodically scans, reports a 'risk', and prompts you to buy a McAfee subscription. Removing it does not remove or weaken any antivirus you actually run, including Microsoft Defender.",
+      "evidenceSource": "public-list",
+      "requiresConsent": true,
+      "sensitiveClass": "security-trial",
+      "note": "Security carve-out entry (docs/STATE.md 2026-08-25). Exact display name only, by loader rule. Deliberately NOT matching McAfee LiveSafe / Total Protection / Personal Security: those display names are identical for the OEM trial and the retail product a user paid for.",
+      "match": {
+        "registryDisplayName": ["McAfee Security Scan Plus"]
+      }
+    },
+    {
+      "id": "norton-security-scan",
+      "displayName": "Norton Security Scan",
+      "vendor": "NortonLifeLock / Gen Digital",
+      "reason": "The preinstalled Norton trial/nagware scanner bundled onto OEM factory images and with third-party installers. It is not the Norton antivirus product: it scans on a schedule and prompts you to buy a Norton subscription. Removing it does not remove or weaken any antivirus you actually run, including Microsoft Defender.",
+      "evidenceSource": "public-list",
+      "requiresConsent": true,
+      "sensitiveClass": "security-trial",
+      "note": "Security carve-out entry (docs/STATE.md 2026-08-25). Exact display name only, by loader rule. Deliberately NOT matching Norton 360 / Norton Security / Norton AntiVirus: those display names are identical for the OEM trial and the retail product a user paid for.",
+      "match": {
+        "registryDisplayName": ["Norton Security Scan"]
       }
     }
   ]

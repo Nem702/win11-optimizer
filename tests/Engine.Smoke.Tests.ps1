@@ -120,6 +120,89 @@ Describe 'Finding contract' {
         }
     }
 
+    Context 'safety model: the second axis (chunk P2-C1a)' {
+
+        # Confidence and RequiresConsent answer different questions and the label is
+        # an AND of both. All four combinations are asserted rather than the two
+        # interesting ones, because an AND is exactly the kind of thing that quietly
+        # becomes an OR and only one of the four cases would notice.
+        It 'labels Confidence=<Confidence> RequiresConsent=<Consent> as "<Expected>"' -ForEach @(
+            @{ Confidence = 'Known';     Consent = $false; Expected = 'Safe to remove' }
+            @{ Confidence = 'Known';     Consent = $true;  Expected = 'Review needed' }
+            @{ Confidence = 'Heuristic'; Consent = $false; Expected = 'Review needed' }
+            @{ Confidence = 'Heuristic'; Consent = $true;  Expected = 'Review needed' }
+        ) {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence $Confidence -RemovalMethod Appx -RequiresConsent:$Consent
+
+            $finding.SafetyLabel | Should -Be $Expected
+        }
+
+        It 'always carries RequiresConsent as a real boolean, set explicitly' {
+            $withoutSwitch = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $withSwitch = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx -RequiresConsent
+
+            foreach ($finding in $withoutSwitch, $withSwitch) {
+                $finding.PSObject.Properties.Name | Should -Contain 'RequiresConsent'
+                $finding.RequiresConsent | Should -BeOfType [bool]
+            }
+
+            $withoutSwitch.RequiresConsent | Should -BeFalse
+            $withSwitch.RequiresConsent    | Should -BeTrue
+        }
+
+        # Fail closed. This direction is the whole point: a Finding that lost the
+        # field -- deserialized from a run log written before P2-C1a, say -- must
+        # degrade to "review needed" and must never be upgraded to "safe".
+        It 'falls back to "Review needed" when RequiresConsent is a string' {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $finding.SafetyLabel | Should -Be 'Safe to remove' -Because 'otherwise the test proves nothing about the change'
+
+            $finding.RequiresConsent = 'true'
+            $finding.SafetyLabel | Should -Be 'Review needed'
+        }
+
+        It 'falls back to "Review needed" when RequiresConsent is null' {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $finding.RequiresConsent = $null
+            $finding.SafetyLabel | Should -Be 'Review needed'
+        }
+
+        It 'falls back to "Review needed" when RequiresConsent is absent entirely' {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $finding.PSObject.Properties.Remove('RequiresConsent')
+
+            $finding.PSObject.Properties.Name | Should -Not -Contain 'RequiresConsent'
+            $finding.SafetyLabel | Should -Be 'Review needed'
+        }
+
+        It 'still refuses to let SafetyLabel be assigned once RequiresConsent is gone' {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $finding.PSObject.Properties.Remove('RequiresConsent')
+
+            { $finding.SafetyLabel = 'Safe to remove' } | Should -Throw
+            $finding.SafetyLabel | Should -Be 'Review needed'
+        }
+
+        It 'survives a JSON round-trip without changing the label' {
+            foreach ($consent in $true, $false) {
+                $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                    -Evidence 'why' -Confidence Known -RemovalMethod Appx -RequiresConsent:$consent
+                $revived = $finding | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+
+                $revived.RequiresConsent | Should -BeOfType [bool]
+                $revived.RequiresConsent | Should -Be $consent
+                Test-Finding -InputObject $revived | Should -BeTrue
+            }
+        }
+    }
+
     Context 'Test-Finding' {
 
         It 'accepts a Finding built by New-Finding' {
@@ -147,6 +230,24 @@ Describe 'Finding contract' {
         It 'rejects $null' {
             Test-Finding -InputObject $null | Should -BeFalse
         }
+
+        It 'rejects a Finding with no RequiresConsent field' {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $finding.PSObject.Properties.Remove('RequiresConsent')
+
+            Test-Finding -InputObject $finding | Should -BeFalse
+            ((Test-Finding -InputObject $finding -Detailed) -join ' ') | Should -Match 'RequiresConsent'
+        }
+
+        It 'rejects a RequiresConsent that is not a boolean' {
+            $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                -Evidence 'why' -Confidence Known -RemovalMethod Appx
+            $finding.RequiresConsent = 'true'
+
+            Test-Finding -InputObject $finding | Should -BeFalse
+            ((Test-Finding -InputObject $finding -Detailed) -join ' ') | Should -Match 'must be a boolean'
+        }
     }
 
     Context 'Get-FindingContract' {
@@ -165,6 +266,33 @@ Describe 'Finding contract' {
                 $finding = New-Finding -Category $category -Id 'x' -DisplayName 'x' `
                     -Evidence 'why' -Confidence Known -RemovalMethod Appx
                 $finding.Category | Should -Be $category
+            }
+        }
+
+        It 'hands out the two-axis safety rule so no consumer has to restate it' {
+            $contract = Get-FindingContract
+            $contract.SafetyLabels    | Should -Be @('Safe to remove', 'Review needed')
+            $contract.SafetyLabelRule | Should -BeOfType [scriptblock]
+
+            (& $contract.SafetyLabelRule 'Known'     $false)  | Should -Be 'Safe to remove'
+            (& $contract.SafetyLabelRule 'Known'     $true)   | Should -Be 'Review needed'
+            (& $contract.SafetyLabelRule 'Heuristic' $false)  | Should -Be 'Review needed'
+            (& $contract.SafetyLabelRule 'Heuristic' $true)   | Should -Be 'Review needed'
+
+            # Fails closed for a caller holding two loose field values too.
+            (& $contract.SafetyLabelRule 'Known'     $null)   | Should -Be 'Review needed'
+            (& $contract.SafetyLabelRule 'Known'     'true')  | Should -Be 'Review needed'
+            (& $contract.SafetyLabelRule 'Known'     'false') | Should -Be 'Review needed'
+        }
+
+        It 'exposes the same rule the SafetyLabel property actually runs' {
+            $contract = Get-FindingContract
+            foreach ($confidence in $contract.Confidences) {
+                foreach ($consent in $true, $false) {
+                    $finding = New-Finding -Category OemBloatware -Id 'x' -DisplayName 'x' `
+                        -Evidence 'why' -Confidence $confidence -RemovalMethod Appx -RequiresConsent:$consent
+                    $finding.SafetyLabel | Should -Be (& $contract.SafetyLabelRule $confidence $consent)
+                }
             }
         }
     }

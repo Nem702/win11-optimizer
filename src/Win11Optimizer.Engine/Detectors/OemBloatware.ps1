@@ -34,6 +34,32 @@ $script:OemMatchFields = @('appxPackageName', 'appxPackageFamilyName', 'registry
 # Minimum literal prefix in front of a trailing '*'. See Data\README.md.
 $script:OemMinimumPatternPrefix = 6
 
+# The only accepted values of an entry's optional 'sensitiveClass'. This is a
+# closed set on purpose: a typo must fail the load rather than quietly downgrade
+# an entry to an ordinary one and lose the extra rules that go with the class.
+$script:OemSensitiveClasses = @('security-trial')
+
+# The narrow carve-out to the "never whitelist security software" rule
+# (docs/STATE.md, 2026-08-25): OEM trial/nagware editions of security suites may
+# be listed, and the loader -- not convention -- enforces what that costs. A
+# 'security-trial' entry must require consent, must be wildcard-free in EVERY
+# match field, and must say in its reason that it is the trial edition. The point
+# is that it cannot be possible to add a wildcarded security entry and still have
+# the list load: a broad pattern here would match the security product the user
+# chose and paid for, which is the one outcome this project must never produce.
+# The reason check is a keyword test because that is the only structural handle on
+# prose; see Data\README.md.
+# Findings from an entry whose identifier has never been seen on real hardware say
+# so in plain words. Silence means the opposite: the identifier was measured. The
+# GUI gets the same fact structurally via WhitelistEntryId -> EvidenceSource; this
+# line is for the human reading the evidence, who should not have to know the
+# whitelist schema to learn that a row is unverified.
+$script:OemPublicListEvidenceSource = 'public-list'
+$script:OemPublicListEvidenceText   = 'Provenance: this whitelist entry comes from a published bloatware list. Its identifier has never been observed on real hardware by this project, so the match is only as good as that list.'
+
+$script:OemSecurityTrialClass       = 'security-trial'
+$script:OemSecurityTrialReasonWords = @('trial', 'nagware')
+
 $script:OemScanResultTypeName   = 'Win11Optimizer.OemScanResult'
 $script:OemScanSourceTypeName   = 'Win11Optimizer.OemScanSource'
 $script:OemInstalledAppTypeName = 'Win11Optimizer.InstalledApp'
@@ -386,6 +412,30 @@ function Get-KnownBloatwareList {
         }
         $seenIds[$id.ToLowerInvariant()] = $true
 
+        # requiresConsent must be a real JSON boolean. The string "true" is the
+        # failure this rejects: it is truthy in PowerShell, so accepting it would
+        # let a mistyped entry look enforced while the Finding contract -- which
+        # fails closed on a non-boolean -- and the carve-out check below disagreed
+        # about what it meant. One shape, checked at the door.
+        $requiresConsent = $false
+        $consentProperty = $entry.PSObject.Properties['requiresConsent']
+        if ($null -ne $consentProperty -and $null -ne $consentProperty.Value) {
+            if ($consentProperty.Value -isnot [bool]) {
+                throw "Known-bloatware whitelist '$Path': $where declares 'requiresConsent' as [$($consentProperty.Value.GetType().Name)] '$($consentProperty.Value)'. It must be a JSON boolean (true / false), not a string."
+            }
+            $requiresConsent = [bool] $consentProperty.Value
+        }
+
+        $sensitiveClass = $null
+        $classProperty = $entry.PSObject.Properties['sensitiveClass']
+        if ($null -ne $classProperty -and $null -ne $classProperty.Value) {
+            $declaredClass = [string] $classProperty.Value
+            if ($script:OemSensitiveClasses -notcontains $declaredClass) {
+                throw "Known-bloatware whitelist '$Path': $where declares unknown 'sensitiveClass' '$declaredClass'. Allowed: $($script:OemSensitiveClasses -join ', ')."
+            }
+            $sensitiveClass = @($script:OemSensitiveClasses | Where-Object { $_ -eq $declaredClass })[0]
+        }
+
         $match = Get-OemPropertyValue -InputObject $entry -Name 'match'
         if ($null -eq $match) {
             throw "Known-bloatware whitelist '$Path': $where has no 'match' block."
@@ -424,6 +474,29 @@ function Get-KnownBloatwareList {
             throw "Known-bloatware whitelist '$Path': $where uses 'registryPublisher' without 'registryDisplayName'. Publisher alone is a guard, never a match -- matching every product from a vendor is too broad to be a safety claim."
         }
 
+        if ($sensitiveClass -eq $script:OemSecurityTrialClass) {
+            if (-not $requiresConsent) {
+                throw "Known-bloatware whitelist '$Path': $where is sensitiveClass '$($script:OemSecurityTrialClass)' but does not set 'requiresConsent': true. A security-trial entry surfaces at 'Review needed' and never as safe to remove; it must say so structurally."
+            }
+
+            foreach ($field in $script:OemMatchFields) {
+                foreach ($pattern in $rules[$field]) {
+                    if ($pattern.Contains('*')) {
+                        throw "Known-bloatware whitelist '$Path': $where is sensitiveClass '$($script:OemSecurityTrialClass)' and field '$field' contains the wildcard pattern '$pattern'. Security-trial entries are exact display names only, in every field, with no exceptions -- a prefix match here would eventually match the security product the user chose and paid for."
+                    }
+                }
+            }
+
+            $reason = [string](Get-OemPropertyValue -InputObject $entry -Name 'reason')
+            $saysTrial = $false
+            foreach ($word in $script:OemSecurityTrialReasonWords) {
+                if ($reason.IndexOf($word, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $saysTrial = $true }
+            }
+            if (-not $saysTrial) {
+                throw "Known-bloatware whitelist '$Path': $where is sensitiveClass '$($script:OemSecurityTrialClass)' but its 'reason' never says this is the trial or nagware edition. The reason is what the user reads before approving a removal, and for a security product it has to state which edition is being flagged. Mention '$($script:OemSecurityTrialReasonWords -join "' or '")'."
+            }
+        }
+
         [pscustomobject]@{
             PSTypeName            = 'Win11Optimizer.KnownBloatwareEntry'
             Id                    = $id
@@ -431,6 +504,8 @@ function Get-KnownBloatwareList {
             Vendor                = [string](Get-OemPropertyValue -InputObject $entry -Name 'vendor')
             Reason                = [string](Get-OemPropertyValue -InputObject $entry -Name 'reason')
             EvidenceSource        = [string](Get-OemPropertyValue -InputObject $entry -Name 'evidenceSource' -Default 'unspecified')
+            RequiresConsent       = [bool] $requiresConsent
+            SensitiveClass        = $sensitiveClass
             Note                  = [string](Get-OemPropertyValue -InputObject $entry -Name 'note')
             AppxPackageName       = [string[]] $rules['appxPackageName']
             AppxPackageFamilyName = [string[]] $rules['appxPackageFamilyName']
@@ -459,7 +534,17 @@ function Find-KnownBloatware {
         Every returned object comes from New-Finding with Category 'OemBloatware'
         and Confidence 'Known'. This detector emits no heuristic findings: a
         whitelist match, or nothing. Surfacing unrecognized-but-unused software is
-        chunk P2-C3's job.
+        chunk P2-C3's job. An entry marked 'requiresConsent' produces a Finding
+        that is still Confidence 'Known' but carries RequiresConsent, so its
+        SafetyLabel reads 'Review needed' -- certainty and consent are separate
+        questions and the contract keeps them separate.
+
+        Each Finding also carries WhitelistEntryId: the id of the entry it matched.
+        That is the join key back into Get-KnownBloatwareList, where a caller can
+        read the entry's evidenceSource, sensitiveClass and requiresConsent
+        structurally instead of string-matching the Evidence prose. It lives on the
+        OemBloatware Findings rather than on the Finding contract because
+        provenance is a whitelist concept; the other detectors have no whitelist.
 
         Deduplication: one Finding per (whitelist entry, RemovalMethod). An app found
         as both a per-user Appx package and a provisioned package collapses into a
@@ -553,10 +638,12 @@ function Find-KnownBloatware {
 
             if (-not $hit) { continue }
 
-            $entryId     = [string](Get-OemPropertyValue -InputObject $entry -Name 'Id')
-            $entryName   = [string](Get-OemPropertyValue -InputObject $entry -Name 'DisplayName')
-            $entryVendor = [string](Get-OemPropertyValue -InputObject $entry -Name 'Vendor')
-            $entryReason = [string](Get-OemPropertyValue -InputObject $entry -Name 'Reason')
+            $entryId      = [string](Get-OemPropertyValue -InputObject $entry -Name 'Id')
+            $entryName    = [string](Get-OemPropertyValue -InputObject $entry -Name 'DisplayName')
+            $entryVendor  = [string](Get-OemPropertyValue -InputObject $entry -Name 'Vendor')
+            $entryReason  = [string](Get-OemPropertyValue -InputObject $entry -Name 'Reason')
+            $entrySource  = [string](Get-OemPropertyValue -InputObject $entry -Name 'EvidenceSource')
+            $entryConsent = [bool](Get-OemPropertyValue -InputObject $entry -Name 'RequiresConsent' -Default $false)
 
             $key = '{0}|{1}' -f $entryId.ToLowerInvariant(), $removalMethod
 
@@ -565,15 +652,22 @@ function Find-KnownBloatware {
                 if ([string]::IsNullOrWhiteSpace($shownName)) { $shownName = $displayName }
 
                 $record = [pscustomobject]@{
-                    EntryId       = $entryId
-                    DisplayName   = $shownName
-                    RemovalMethod = $removalMethod
-                    Id            = $identifier
-                    Sources       = (New-Object System.Collections.Generic.List[string])
-                    Evidence      = (New-Object System.Collections.Generic.List[string])
+                    EntryId         = $entryId
+                    DisplayName     = $shownName
+                    RemovalMethod   = $removalMethod
+                    Id              = $identifier
+                    RequiresConsent = $entryConsent
+                    Sources         = (New-Object System.Collections.Generic.List[string])
+                    Evidence        = (New-Object System.Collections.Generic.List[string])
                 }
                 $record.Evidence.Add("Matches curated known-bloatware entry '$entryId' ($shownName, $entryVendor).")
                 $record.Evidence.Add($entryReason)
+                if ($entrySource -eq $script:OemPublicListEvidenceSource) {
+                    $record.Evidence.Add($script:OemPublicListEvidenceText)
+                }
+                if ($entryConsent) {
+                    $record.Evidence.Add('This entry requires an explicit human OK before anything is removed, however certain the match is.')
+                }
                 $matched[$key] = $record
             }
 
@@ -612,12 +706,19 @@ function Find-KnownBloatware {
             $record.Evidence.Add('Present both per-user and provisioned: clearing it fully needs both the per-user and the provisioned call.')
         }
 
-        New-Finding -Category 'OemBloatware' `
+        $finding = New-Finding -Category 'OemBloatware' `
             -Id $record.Id `
             -DisplayName $record.DisplayName `
             -Evidence ([string[]] $record.Evidence.ToArray()) `
             -Confidence 'Known' `
+            -RequiresConsent:$record.RequiresConsent `
             -RemovalMethod $record.RemovalMethod
+
+        # Added here, not in New-Finding: the join key back to the whitelist is an
+        # OemBloatware concept, and the generic contract has no whitelist to join to.
+        $finding | Add-Member -MemberType NoteProperty -Name 'WhitelistEntryId' -Value $record.EntryId
+
+        $finding
     }
 }
 

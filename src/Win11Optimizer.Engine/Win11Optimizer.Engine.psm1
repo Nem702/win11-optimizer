@@ -40,13 +40,34 @@ $script:FindingRemovalMethods = @(
     'FileDelete'
 )
 
-# The safety model from docs/PLAN.md, expressed once: only a curated-whitelist
-# (Known) match may ever be shown to the user as safe. Everything else is
-# "review needed". Findings carry this as a derived property so no UI or report
-# can quietly re-label a Heuristic item.
-$script:FindingSafetyLabels = @{
-    Known     = 'Safe to remove'
-    Heuristic = 'Review needed'
+# The two safety labels. Defined once here so nothing else spells them out.
+$script:FindingSafetyLabelSafe   = 'Safe to remove'
+$script:FindingSafetyLabelReview = 'Review needed'
+
+# The safety model from docs/PLAN.md and the 2026-08-25 decision in docs/STATE.md,
+# expressed exactly once. It reads TWO axes, which answer different questions:
+#
+#   Confidence       how sure are we this is the thing we think it is?
+#   RequiresConsent  regardless of that, must a human explicitly approve this one?
+#
+# Only a curated-whitelist (Known) match that needs no explicit consent is ever
+# shown to the user as safe. Everything else is "review needed". Findings carry
+# this as a derived property so no UI or report can quietly re-label an item, and
+# Get-FindingContract hands the rule itself out so no consumer restates it.
+#
+# It FAILS CLOSED. Anything other than a real [bool] $false for RequiresConsent --
+# absent, $null, or the string 'true' off a sloppy round-trip -- is read as
+# "consent required". A Finding serialized before RequiresConsent existed therefore
+# degrades to "review needed"; a round-trip through JSON can never silently upgrade
+# a sensitive item to "safe".
+$script:FindingSafetyLabelRule = {
+    param($Confidence, $RequiresConsent)
+
+    if ($Confidence -ne 'Known')        { return $script:FindingSafetyLabelReview }
+    if ($RequiresConsent -isnot [bool]) { return $script:FindingSafetyLabelReview }
+    if ($RequiresConsent)               { return $script:FindingSafetyLabelReview }
+
+    $script:FindingSafetyLabelSafe
 }
 
 $script:FindingTypeName = 'Win11Optimizer.Finding'
@@ -65,10 +86,13 @@ function New-Finding {
         All field validation happens here at construction time, so a Finding that
         exists is by definition a valid one.
 
-        The SafetyLabel property is derived from Confidence and is not settable:
-        per the safety model in docs/PLAN.md, only Confidence 'Known' (curated
-        whitelist match) is ever labelled "Safe to remove"; 'Heuristic' findings
-        are always "Review needed".
+        The SafetyLabel property is derived from BOTH Confidence and
+        RequiresConsent, and is not settable: per the safety model in
+        docs/PLAN.md, only a Confidence 'Known' (curated whitelist match) that
+        does not require consent is ever labelled "Safe to remove". Everything
+        else -- a 'Heuristic' finding, or a certain match that a human must still
+        approve -- is "Review needed". The derivation fails closed, so a Finding
+        whose RequiresConsent is missing or not a boolean is "Review needed" too.
 
     .PARAMETER Category
         Which sweep category surfaced this item.
@@ -88,6 +112,13 @@ function New-Finding {
     .PARAMETER Confidence
         'Known' for a curated-whitelist match, 'Heuristic' for anything surfaced
         by a usage heuristic.
+
+    .PARAMETER RequiresConsent
+        The second safety axis, orthogonal to Confidence: set it when this item
+        must not be acted on without an explicit human OK, however certain the
+        match is. A curated whitelist entry for an OEM security-suite trial is
+        the motivating case -- the match is certain, and it still needs a human.
+        Absent means $false; the resulting Finding always carries a real [bool].
 
     .PARAMETER RemovalMethod
         Which mechanism the removal dispatcher (chunk P3-C1) will need for this
@@ -125,24 +156,41 @@ function New-Finding {
         [ValidateSet('Known', 'Heuristic')]
         [string] $Confidence,
 
+        [Parameter()]
+        [switch] $RequiresConsent,
+
         [Parameter(Mandatory)]
         [ValidateSet('Appx', 'RegistryUninstallString', 'PackageManagement', 'TaskScheduler', 'RegistryRunKey', 'ServiceDisable', 'FileDelete')]
         [string] $RemovalMethod
     )
 
     $finding = [pscustomobject]@{
-        PSTypeName    = $script:FindingTypeName
-        Category      = $Category
-        Id            = $Id
-        DisplayName   = $DisplayName
-        Evidence      = [string[]] $Evidence
-        Confidence    = $Confidence
-        RemovalMethod = $RemovalMethod
+        PSTypeName      = $script:FindingTypeName
+        Category        = $Category
+        Id              = $Id
+        DisplayName     = $DisplayName
+        Evidence        = [string[]] $Evidence
+        Confidence      = $Confidence
+        # Always a real [bool], never absent and never $null -- the safety rule
+        # treats anything else as "consent required", and that must be a genuine
+        # signal about the item rather than an artefact of a missing field.
+        RequiresConsent = [bool] $RequiresConsent
+        RemovalMethod   = $RemovalMethod
     }
 
-    # Derived, read-only: cannot be set by a caller and cannot drift from Confidence.
+    # Derived, read-only: cannot be set by a caller and cannot drift from the two
+    # axes it reads. Both are read through PSObject.Properties rather than direct
+    # property access, because Set-StrictMode -Version Latest is on and this
+    # property must still answer -- with "Review needed" -- for a tampered or
+    # pre-RequiresConsent object that is missing one of them.
     $finding | Add-Member -MemberType ScriptProperty -Name 'SafetyLabel' -Value {
-        if ($this.Confidence -eq 'Known') { 'Safe to remove' } else { 'Review needed' }
+        $confidenceProperty = $this.PSObject.Properties['Confidence']
+        $consentProperty    = $this.PSObject.Properties['RequiresConsent']
+
+        $confidence = if ($null -eq $confidenceProperty) { $null } else { $confidenceProperty.Value }
+        $consent    = if ($null -eq $consentProperty)    { $null } else { $consentProperty.Value }
+
+        & $script:FindingSafetyLabelRule $confidence $consent
     }
 
     $finding
@@ -187,7 +235,7 @@ function Test-Finding {
         else {
             $properties = @($InputObject.PSObject.Properties.Name)
 
-            foreach ($required in 'Category', 'Id', 'DisplayName', 'Evidence', 'Confidence', 'RemovalMethod') {
+            foreach ($required in 'Category', 'Id', 'DisplayName', 'Evidence', 'Confidence', 'RequiresConsent', 'RemovalMethod') {
                 if ($properties -notcontains $required) {
                     $problems.Add("Missing required field '$required'.")
                 }
@@ -199,6 +247,15 @@ function Test-Finding {
 
             if ($properties -contains 'Confidence' -and $script:FindingConfidences -notcontains $InputObject.Confidence) {
                 $problems.Add("Confidence '$($InputObject.Confidence)' is not one of: $($script:FindingConfidences -join ', ').")
+            }
+
+            # A real boolean, not a truthy string. SafetyLabel fails closed on a
+            # non-boolean, so an item whose consent flag arrived as the string
+            # "true" would still be labelled "Review needed" -- but it would be
+            # labelled that for the wrong reason, and the next field to arrive
+            # mistyped might not fail as harmlessly. Reject it here instead.
+            if ($properties -contains 'RequiresConsent' -and $InputObject.RequiresConsent -isnot [bool]) {
+                $problems.Add("Field 'RequiresConsent' must be a boolean, not [$(if ($null -eq $InputObject.RequiresConsent) { 'null' } else { $InputObject.RequiresConsent.GetType().Name })].")
             }
 
             if ($properties -contains 'RemovalMethod' -and $script:FindingRemovalMethods -notcontains $InputObject.RemovalMethod) {
@@ -231,17 +288,25 @@ function Get-FindingContract {
     .DESCRIPTION
         Lets detectors, the GUI and the test suite read the permitted Category /
         Confidence / RemovalMethod values from one place instead of restating them.
+
+        SafetyLabelRule is the safety rule itself, as a scriptblock taking
+        ($Confidence, $RequiresConsent) and returning the label. It is the same
+        scriptblock a Finding's SafetyLabel property runs, so a consumer that has
+        only the two field values -- a row deserialized from a run log, say -- can
+        derive the label without restating the two-axis rule or the fail-closed
+        behaviour. SafetyLabels lists the only two strings it can return.
     #>
     [CmdletBinding()]
     [OutputType([psobject])]
     param()
 
     [pscustomobject]@{
-        TypeName       = $script:FindingTypeName
-        Categories     = [string[]] $script:FindingCategories
-        Confidences    = [string[]] $script:FindingConfidences
-        RemovalMethods = [string[]] $script:FindingRemovalMethods
-        SafetyLabels   = $script:FindingSafetyLabels.Clone()
+        TypeName        = $script:FindingTypeName
+        Categories      = [string[]] $script:FindingCategories
+        Confidences     = [string[]] $script:FindingConfidences
+        RemovalMethods  = [string[]] $script:FindingRemovalMethods
+        SafetyLabels    = [string[]] @($script:FindingSafetyLabelSafe, $script:FindingSafetyLabelReview)
+        SafetyLabelRule = $script:FindingSafetyLabelRule
     }
 }
 
