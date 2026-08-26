@@ -42,6 +42,12 @@
         'Get-AppUsageClassification'
         'Find-UnusedApp'
         'Invoke-UnusedAppScan'
+
+        # P2-C2 — StartupItem / Service detector
+        'Get-KnownStartupItemList'
+        'Get-StartupItemInventory'
+        'Find-UnwantedStartupItem'
+        'Invoke-StartupItemScan'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

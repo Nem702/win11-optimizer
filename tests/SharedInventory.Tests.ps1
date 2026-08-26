@@ -269,6 +269,128 @@ Describe 'Shared scan-result wrapper' {
         }
     }
 
+    It 'accepts the Refused status' {
+        InModuleScope Win11Optimizer.Engine {
+            $source = New-ScanSource -Name 'A' -Status 'Refused' -Reason 'Never used, on any machine.'
+            $source.Status | Should -Be 'Refused'
+            $source.Reason | Should -Be 'Never used, on any machine.'
+        }
+    }
+
+    It 'rejects a <_> source that states no reason' -ForEach @('Skipped', 'Failed', 'Refused') {
+        $status = $_
+        InModuleScope Win11Optimizer.Engine -Parameters @{ Status = $status } {
+            param($Status)
+            # A source that is not Succeeded and carries no reason reaches the user
+            # as an unexplained gap, which is the silent under-report this project
+            # exists to prevent.
+            { New-ScanSource -Name 'A' -Status $Status } | Should -Throw
+            { New-ScanSource -Name 'A' -Status $Status -Reason '   ' } | Should -Throw
+        }
+    }
+
+    It 'gives a Succeeded source a null Reason rather than an empty string, even if one is passed' {
+        InModuleScope Win11Optimizer.Engine {
+            $source = New-ScanSource -Name 'A' -Status 'Succeeded' -Reason 'ignored'
+            $null -eq $source.Reason | Should -BeTrue
+        }
+    }
+
+    It 'does not let a Refused source make a scan incomplete' {
+        InModuleScope Win11Optimizer.Engine {
+            $sources = @(
+                (New-ScanSource -Name 'Real' -Status 'Succeeded' -ItemCount 3)
+                (New-ScanSource -Name 'NeverUsed' -Status 'Refused' -Reason 'Refused by design: the signal is saturated on every machine.')
+            )
+            $result = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `
+                -DurationSeconds 1.0 -IsElevated $true -InventoryCount 3 `
+                -Source $sources -Finding @() -ScanLabel 'Test scan'
+
+            $result.IsComplete       | Should -BeTrue
+            $result.IncompleteReason | Should -BeNullOrEmpty
+            $result.SummaryText      | Should -Not -Match 'PARTIAL'
+        }
+    }
+
+    It 'keeps a Refused source visible in Sources with its reason intact' {
+        InModuleScope Win11Optimizer.Engine {
+            $reason = 'Refused by design: measured saturated on the development machine 2026-08-25.'
+            $result = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `
+                -DurationSeconds 1.0 -IsElevated $true -InventoryCount 3 `
+                -Source @(
+                    (New-ScanSource -Name 'Real' -Status 'Succeeded')
+                    (New-ScanSource -Name 'NeverUsed' -Status 'Refused' -Reason $reason)
+                ) -Finding @() -ScanLabel 'Test scan'
+
+            $refused = @($result.Sources | Where-Object { $_.Name -eq 'NeverUsed' })[0]
+            $refused.Status           | Should -Be 'Refused'
+            $refused.Reason           | Should -Be $reason
+            $result.RefusedSourceName | Should -Be @('NeverUsed')
+        }
+    }
+
+    It 'acknowledges refused sources in the summary by name, without PARTIAL and without the full reason' {
+        InModuleScope Win11Optimizer.Engine {
+            $reason = 'A very long reason that runs to several sentences and must not be inlined into a one-line summary. It explains a measurement.'
+            $result = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `
+                -DurationSeconds 1.0 -IsElevated $true -InventoryCount 286 `
+                -Source @(
+                    (New-ScanSource -Name 'Real' -Status 'Succeeded')
+                    (New-ScanSource -Name 'FileSystemLastAccess' -Status 'Refused' -Reason $reason)
+                ) -Finding @() -ScanLabel 'Test scan' -FindingNoun 'unused-app findings'
+
+            $result.SummaryText | Should -Match '^Complete scan of 286 installed items: 0 unused-app findings\. '
+            $result.SummaryText | Should -Match '1 signal not used by design \(FileSystemLastAccess\) -- see Sources\.$'
+            $result.SummaryText | Should -Not -Match 'PARTIAL'
+            $result.SummaryText | Should -Not -Match 'runs to several sentences'
+        }
+    }
+
+    It 'pluralises and names every refused source when there is more than one' {
+        InModuleScope Win11Optimizer.Engine {
+            $result = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `
+                -DurationSeconds 1.0 -IsElevated $true -InventoryCount 1 `
+                -Source @(
+                    (New-ScanSource -Name 'AlphaSignal' -Status 'Refused' -Reason 'No.')
+                    (New-ScanSource -Name 'BetaSignal' -Status 'Refused' -Reason 'Also no.')
+                ) -Finding @() -ScanLabel 'Test scan'
+
+            $result.SummaryText | Should -Match '2 signals not used by design \(AlphaSignal, BetaSignal\) -- see Sources\.'
+        }
+    }
+
+    It 'still counts Skipped and Failed as incomplete alongside a Refused source' {
+        InModuleScope Win11Optimizer.Engine {
+            $result = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `
+                -DurationSeconds 1.0 -IsElevated $false -InventoryCount 1 `
+                -Source @(
+                    (New-ScanSource -Name 'Elevated' -Status 'Skipped' -Reason 'Not elevated.')
+                    (New-ScanSource -Name 'Broken' -Status 'Failed' -Reason 'It broke.')
+                    (New-ScanSource -Name 'NeverUsed' -Status 'Refused' -Reason 'Refused by design.')
+                ) -Finding @() -ScanLabel 'Test scan' -WarningAction SilentlyContinue
+
+            $result.IsComplete       | Should -BeFalse
+            $result.IncompleteReason | Should -Match 'Not elevated'
+            $result.IncompleteReason | Should -Match 'It broke'
+            $result.IncompleteReason | Should -Not -Match 'NeverUsed'
+            $result.SummaryText      | Should -Match 'PARTIAL'
+            $result.SummaryText      | Should -Match 'not used by design \(NeverUsed\)'
+        }
+    }
+
+    It 'does not warn on the warning stream when the only non-success source is Refused' {
+        InModuleScope Win11Optimizer.Engine {
+            $warnings = @()
+            $null = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `
+                -DurationSeconds 1.0 -IsElevated $true -InventoryCount 1 `
+                -Source @(
+                    (New-ScanSource -Name 'Real' -Status 'Succeeded')
+                    (New-ScanSource -Name 'NeverUsed' -Status 'Refused' -Reason 'Refused by design.')
+                ) -Finding @() -ScanLabel 'Test scan' -WarningVariable warnings
+            ($warnings -join ' ') | Should -Not -Match 'INCOMPLETE'
+        }
+    }
+
     It 'carries the detector type tag in front of the shared one' {
         InModuleScope Win11Optimizer.Engine {
             $result = New-ScanResult -Detector 'D' -Category 'UnusedApp' -StartedUtc ([datetime]::UtcNow) `

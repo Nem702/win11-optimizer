@@ -86,8 +86,10 @@
       "reason": "Every NVIDIA-published uninstall entry on a Windows machine is the graphics driver, one of its containers/services/plugins, or the app that updates it. This machine carries twenty of them, none user-launched. Removing one costs the display driver or its update path.",
       "match": {
         "registryPublisher": ["NVIDIA Corporation"],
+        "registryDisplayName": ["NVIDIA*"],
         "appxPackageName": ["NVIDIACorp.*"]
-      }
+      },
+      "note": "The display-name rule is the half that reaches SERVICES and orphans. NvContainerLocalSystem carries no CompanyName on its binary at all, so the publisher rule above never fired for it (measured, P2-C2)."
     },
     {
       "id": "amd-driver-stack",
@@ -147,7 +149,9 @@
           "Armoury Crate*",
           "MyASUS*",
           "Alienware Update*",
-          "Acer Care Center*"
+          "Acer Care Center*",
+          "Micro-Star*",
+          "Mystic_Light*"
         ],
         "appxPackageName": [
           "9426MICRO-STARINTERNATION.*",
@@ -160,7 +164,7 @@
           "AD2F1837.HPPCHardwareDiagnostics*"
         ]
       },
-      "note": "9426MICRO-STARINTERNATION.MSICenter was measured on this project's hardware and is why the Store half of this entry exists: MSI Center ships as an Appx package, so the registryDisplayName patterns alone missed it and it came out as a candidate Finding. The Lenovo/Dell/HP/ASUS Store identifiers come from published lists and are unverified here."
+      "note": "9426MICRO-STARINTERNATION.MSICenter was measured on this project's hardware and is why the Store half of this entry exists: MSI Center ships as an Appx package, so the registryDisplayName patterns alone missed it and it came out as a candidate Finding. The Lenovo/Dell/HP/ASUS Store identifiers come from published lists and are unverified here. 'Mystic_Light*' is the display name of MSI's RGB service, which does not begin with 'MSI Center' and so missed every other rule here (measured, P2-C2). 'Micro-Star*' matches no display name on this project's hardware -- the MSI services carry it as their SIGNER, not their display name -- and is kept as the cheap half of that pair; see the P2-C2a report."
     },
     {
       "id": "peripheral-control-software",
@@ -169,8 +173,9 @@
       "reason": "Device control services and dashboards for keyboards, mice, coolers and drives. They run as background services with no window a user opens, and they carry the firmware-update path for the device.",
       "match": {
         "registryPublisher": ["Corsair", "Western Digital Corporation", "Verbatim"],
-        "registryDisplayName": ["Corsair Device Control*", "WD_BLACK*", "WD Discovery*", "WD Drive Utilities*"]
-      }
+        "registryDisplayName": ["Corsair Device Control*", "WD_BLACK*", "WD Discovery*", "WD Drive Utilities*", "Razer *"]
+      },
+      "note": "Razer is a display-name rule, not a publisher rule, and deliberately so: the services this reaches can be ORPHANS, and an orphan's binary -- the thing that would carry the Authenticode signature or the CompanyName -- is gone by definition, so a registryPublisher rule could never match one. Written as 'Razer *' rather than 'Razer*' because curated patterns require a six-character literal prefix (Data/README.md); the space is the vendor/product separator every Razer display name on this project's hardware carries."
     },
     {
       "id": "antivirus-and-endpoint-security",

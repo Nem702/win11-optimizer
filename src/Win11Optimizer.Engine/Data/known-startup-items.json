@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "description": "Curated known-unnecessary startup-item list for the StartupItem detector (chunk P2-C2). An entry here is a claim that a specific autostart entry is not worth running, NOT a claim about the application it belongs to. Autostarting is not evidence of being unwanted -- almost everything a person installs deliberately adds a startup entry -- so this list is short on purpose and every entry has to survive the question 'would the owner of this machine miss it?'. Matching rules and what must never go on this list are documented in Data/README.md.",
+  "updated": "2026-08-25",
+  "entries": [
+    {
+      "id": "quicktime-task",
+      "displayName": "QuickTime Task",
+      "vendor": "Apple Inc.",
+      "provenance": "published",
+      "reason": "Autostart entry for QuickTime for Windows, which Apple discontinued in 2016 and has not patched since; US-CERT advised removing QuickTime for Windows the same year. The entry loads the QuickTime updater and tray icon at every logon. Nothing on a current Windows machine needs QuickTime to play media, and stopping the entry does not remove QuickTime itself.",
+      "match": {
+        "runValueName": ["QuickTime Task"],
+        "targetFileName": ["qttask.exe"]
+      }
+    },
+    {
+      "id": "itunes-helper",
+      "displayName": "iTunesHelper",
+      "vendor": "Apple Inc.",
+      "provenance": "published",
+      "reason": "Resident helper that auto-launched iTunes when an Apple device was plugged in. Apple removed it from iTunes for Windows in 2020, so where it is still present it is a leftover from an older install. iTunes starts, syncs and detects devices normally without it.",
+      "match": {
+        "runValueName": ["iTunesHelper"],
+        "targetFileName": ["iTunesHelper.exe"]
+      }
+    },
+    {
+      "id": "ccleaner-smart-cleaning",
+      "displayName": "CCleaner Smart Cleaning monitor",
+      "vendor": "Piriform / Gen Digital",
+      "provenance": "published",
+      "reason": "The resident 'Smart Cleaning' / 'Monitoring' agent CCleaner installs beside itself. It watches browser and disk activity in the background so it can prompt you to clean and to upgrade to the paid edition. CCleaner runs on demand without it and loses no cleaning capability; only the prompting stops.",
+      "note": "Matches the two Run value names Piriform has shipped. Deliberately does not match on a CCleaner executable name -- that would catch the application itself, which is not what this entry is about.",
+      "match": {
+        "runValueName": ["CCleaner Smart Cleaning", "CCleaner Monitoring"]
+      }
+    },
+    {
+      "id": "wildtangent-games-startup",
+      "displayName": "WildTangent Games startup entry",
+      "vendor": "WildTangent",
+      "provenance": "published",
+      "reason": "Autostart entry for the WildTangent trial-game storefront bundled onto OEM factory images. It keeps the store's updater and its offer notifications resident from logon onwards. The storefront itself is already on the known-bloatware whitelist as 'wildtangent-games'.",
+      "note": "Cross-references known-bloatware.json entry 'wildtangent-games'. The two detectors stay independent; grouping the rows is P4-C1's job.",
+      "match": {
+        "runValueName": ["WildTangent*"]
+      }
+    },
+    {
+      "id": "adobe-reader-speed-launcher",
+      "displayName": "Adobe Reader Speed Launcher",
+      "vendor": "Adobe Inc.",
+      "provenance": "published",
+      "reason": "Preloads part of Adobe Reader at every logon so that the Reader window appears faster the first time it is opened. That is its only function: it performs no update, licensing or security work, and Reader opens normally without it.",
+      "note": "Deliberately NOT matching 'Adobe ARM' / 'AdobeAAMUpdater' / 'Acrobat Update Service'. Those are the updater, and an updater that stops running is a machine that stops getting security fixes -- see Data/README.md, 'Updaters are not bloat'.",
+      "match": {
+        "runValueName": ["Adobe Reader Speed Launcher"],
+        "targetFileName": ["reader_sl.exe"]
+      }
+    }
+  ]
+}

@@ -5,7 +5,7 @@ One file per sweep category, added by the Phase 2 chunks in `docs/PLAN.md`:
 | file                  | chunk | category       | status      |
 | --------------------- | ----- | -------------- | ----------- |
 | `OemBloatware.ps1`    | P2-C1, P2-C1a | `OemBloatware` | done |
-| `StartupItems.ps1`    | P2-C2 | `StartupItem`, `Service` | planned |
+| `StartupItems.ps1`    | P2-C2 | `StartupItem`, `Service` | done |
 | `UnusedApps.ps1`      | P2-C3 | `UnusedApp`    | done        |
 | `JunkFiles.ps1`       | P2-C4 | `JunkFile`     | planned     |
 
@@ -53,3 +53,31 @@ Two more, added by chunk P2-C3:
   app in exactly one of `Used` / `Unused` / `Unknown` and the scan result reports all
   three counts, so a scan that could not see usage is obviously distinguishable from
   a scan that found nothing to flag. See `docs/handoff/04-unused-apps.report.md`.
+
+Three more, added by chunk P2-C2:
+
+- **A scan source has four statuses, and `Refused` is not `Skipped`.** `Skipped`
+  means "not read this time, for a reason that could have gone the other way
+  somewhere else" — not elevated, feature off on this machine, path absent.
+  `Refused` means "this project will never use this signal, on any machine, at any
+  privilege level". Only `Skipped` and `Failed` make a scan incomplete. Getting
+  this wrong is not cosmetic: `FileSystemLastAccess` was `Skipped`, so
+  `Invoke-UnusedAppScan` reported itself `PARTIAL` on every run of every machine
+  forever, and a warning that always fires is a warning nobody reads. **`Refused`
+  must never absorb an environmental failure** — if the answer could differ
+  elsewhere, it is `Skipped`. `Reason` is mandatory for all three non-success
+  statuses.
+- **"Autostarting is not evidence of being unwanted."** The same shape as
+  P2-C3's rule, in a category where the raw inventory is much bigger. Almost
+  everything a person installs deliberately adds a startup entry, so
+  `StartupItems.ps1` flags exactly two things — a curated-list match, and an
+  *orphan* whose target is proved absent — and inventories the other ~148 entries
+  without flagging any of them. A publisher tier ("flag what is not Microsoft")
+  was considered and rejected: it would produce 22 Findings on the development
+  machine, every one of them software the user chose.
+- **Prove absence before acting on it.** `Test-StartupTargetPresent` is a
+  tri-state (`$true` / `$false` / `$null`), because `[System.IO.File]::Exists`
+  returns `$false` for a path the caller may not look at, exactly as
+  `Get-ChildItem` does on an unreadable folder. A missing file is only believed
+  once the containing directory has been *listed successfully*; otherwise the
+  answer is `$null` and the entry is inventory, never a Finding.

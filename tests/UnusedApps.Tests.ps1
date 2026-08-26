@@ -655,6 +655,15 @@ Describe 'Exclusion list loading fails loudly' {
         $entries[0].RegistryDisplayName | Should -Be @('Fabricat*')
     }
 
+    It 'reports an empty match block in its own words, not in strict mode''s' {
+        # $match.PSObject.Properties.Name throws "the property 'Name' cannot be
+        # found" under Set-StrictMode -Version Latest when the collection is EMPTY,
+        # which turned a bad list entry into a message about nothing. Cosmetic --
+        # it threw either way -- but the loader has to be the one talking.
+        $json = '{ "entries": [ { "id": "x", "displayName": "X", "class": "runtime", "reason": "R", "match": { } } ] }'
+        { Get-UnusedAppExclusionList -Path (New-TestExclusionFile -Content $json) } | Should -Throw -ExpectedMessage "*empty 'match' block*"
+    }
+
     It 'throws on a match field declared with no patterns' {
         $json = '{ "entries": [ { "id": "x", "displayName": "X", "class": "runtime", "reason": "R", "match": { "registryDisplayName": [] } } ] }'
         { Get-UnusedAppExclusionList -Path (New-TestExclusionFile -Content $json) } | Should -Throw
@@ -995,9 +1004,21 @@ Describe 'Invoke-UnusedAppScan when no signal is available' {
     }
 
     It 'names every unavailable signal in the incomplete reason' {
+        # FileSystemLastAccess deliberately does NOT appear here as of chunk P2-C2:
+        # it is Refused, not unavailable. A signal this project will never use on
+        # any machine is not a degradation of this run, and counting it as one made
+        # every scan PARTIAL forever. It is still named in Sources with its full
+        # reason -- asserted below.
         $script:BlindScan.IncompleteReason | Should -Match 'UserAssist'
         $script:BlindScan.IncompleteReason | Should -Match 'Prefetch'
-        $script:BlindScan.IncompleteReason | Should -Match 'FileSystemLastAccess'
+        $script:BlindScan.IncompleteReason | Should -Not -Match 'FileSystemLastAccess'
+    }
+
+    It 'still carries the refused last-access signal in Sources, with its reason' {
+        $lastAccess = @($script:BlindScan.Sources | Where-Object { $_.Name -eq 'FileSystemLastAccess' })[0]
+        $lastAccess.Status | Should -Be 'Refused'
+        $lastAccess.Reason | Should -Match 'saturated'
+        $script:BlindScan.RefusedSourceName | Should -Contain 'FileSystemLastAccess'
     }
 
     It 'warns on the warning stream' {
@@ -1032,11 +1053,55 @@ Describe 'Invoke-UnusedAppScan source failures' {
         }
     }
 
-    It 'always reports FileSystemLastAccess as skipped, never as silence' {
+    It 'always reports FileSystemLastAccess as refused, never as silence' {
+        # Was 'Skipped' before chunk P2-C2. The status changed because the two
+        # words mean different things: 'Skipped' is environmental and could have
+        # gone the other way somewhere else, and this signal never can. What has
+        # not changed is that the source is present and carries its reason.
         $scan = Invoke-UnusedAppScan -WarningAction SilentlyContinue
         $lastAccess = @($scan.Sources | Where-Object { $_.Name -eq 'FileSystemLastAccess' })[0]
-        $lastAccess.Status | Should -Be 'Skipped'
+        $lastAccess.Status | Should -Be 'Refused'
         $lastAccess.Reason | Should -Not -BeNullOrEmpty
+    }
+
+    It 'reports a complete scan when every real signal succeeds, with the refused one still in Sources' {
+        # The shape a fully-elevated run has. Asserted with prefetch mocked
+        # available rather than by requiring an elevated test host, so it holds on
+        # any machine: before chunk P2-C2 this exact scan still said PARTIAL.
+        Mock -ModuleName Win11Optimizer.Engine -CommandName Test-IsElevated -MockWith { $true }
+        Mock -ModuleName Win11Optimizer.Engine -CommandName Test-UnusedAppPrefetchAvailable -MockWith { [pscustomobject]@{ Available = $true; Reason = $null } }
+        Mock -ModuleName Win11Optimizer.Engine -CommandName Get-PrefetchUsageSignal -MockWith { @() }
+
+        $scan = Invoke-UnusedAppScan -WarningAction SilentlyContinue
+
+        $scan.IsComplete       | Should -BeTrue
+        $scan.IncompleteReason | Should -BeNullOrEmpty
+        $scan.SummaryText      | Should -Not -Match 'PARTIAL'
+        $scan.SummaryText      | Should -Match 'not used by design \(FileSystemLastAccess\)'
+
+        $lastAccess = @($scan.Sources | Where-Object { $_.Name -eq 'FileSystemLastAccess' })[0]
+        $lastAccess.Status | Should -Be 'Refused'
+        $lastAccess.Reason | Should -Match 'saturated'
+        $lastAccess.Reason.Length | Should -BeGreaterThan 200
+    }
+
+    It 'is not made incomplete by the refused last-access signal alone' {
+        # The bug this replaced: a fully-elevated scan with every real signal
+        # succeeding still reported PARTIAL, forever, on every machine, because of
+        # this one source. Asserted structurally rather than against this machine's
+        # elevation, so it holds either way.
+        $scan = Invoke-UnusedAppScan -WarningAction SilentlyContinue
+        $degraded = @($scan.Sources | Where-Object { $_.Status -eq 'Skipped' -or $_.Status -eq 'Failed' })
+        if ($degraded.Count -eq 0) {
+            $scan.IsComplete  | Should -BeTrue
+            $scan.SummaryText | Should -Not -Match 'PARTIAL'
+            $scan.SummaryText | Should -Match 'FileSystemLastAccess'
+        }
+        else {
+            # Something genuinely degraded this run; the refused source still must
+            # not be one of the reasons.
+            $scan.IncompleteReason | Should -Not -Match 'FileSystemLastAccess'
+        }
     }
 }
 

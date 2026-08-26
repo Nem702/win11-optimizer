@@ -29,6 +29,36 @@ $script:SourceAppx        = 'AppxPackage'
 $script:SourceProvisioned = 'AppxProvisionedPackage'
 $script:SourceRegistry    = 'RegistryUninstall'
 
+# The four scan-source statuses, defined once so New-ScanSource's ValidateSet and
+# the completeness derivation below cannot drift apart.
+#
+# The distinction that matters, and the reason 'Refused' exists at all (added by
+# chunk P2-C2, decided in docs\STATE.md 2026-08-25):
+#
+#   Succeeded  read, got data.
+#   Skipped    not read THIS TIME, for a reason that could have gone the other way
+#              on another machine, at another privilege level, or on another run --
+#              not elevated, feature turned off here, path absent.
+#   Failed     tried and errored.
+#   Refused    this project has decided never to use this signal, on ANY machine,
+#              at ANY privilege level. It is a design decision, not a condition of
+#              this run.
+#
+# Only Skipped and Failed mean "this scan saw less than the truth", so only those
+# two make a scan incomplete. Refused stays fully visible in Sources with its
+# reason -- the measurement behind the decision is not deleted, it just stops
+# being called an incompleteness.
+#
+# THE SAFETY PROPERTY: 'Refused' must never become a way to hide an environmental
+# failure. If the answer could be different somewhere else, the status is
+# 'Skipped' or 'Failed'. A source that is Refused on one machine is Refused on all
+# of them.
+$script:ScanSourceStatuses = @('Succeeded', 'Skipped', 'Failed', 'Refused')
+
+# The statuses that count as incompleteness. Everything else in the set above is
+# either a success or a permanent, deliberate omission.
+$script:ScanSourceIncompleteStatuses = @('Skipped', 'Failed')
+
 # Minimum literal prefix in front of a trailing '*'. See Data\README.md.
 $script:MinimumPatternPrefix = 6
 
@@ -135,6 +165,48 @@ function Test-OptimizerAnyPatternMatch {
         if (Test-OptimizerPatternMatch -Pattern $candidate -Value $Value) { return $true }
     }
     $false
+}
+
+function Get-OptimizerExclusionMatch {
+    # Returns the first curated exclusion entry an inventory record matches, or
+    # $null. Promoted here from Detectors\UnusedApps.ps1 by chunk P2-C2 on its
+    # second use -- P2-C2 matches SERVICES against the same P2-C3 exclusion list,
+    # so that the driver / security / firmware-update vendor classes are stated
+    # once in one file rather than twice in two.
+    #
+    # The record only has to expose the four properties below; anything missing
+    # reads as absent. P2-C2 builds one from a service registry key (DisplayName
+    # from the service, Publisher from the target binary's version info) precisely
+    # so this one matcher can serve both detectors.
+    #
+    # Unlike the OEM whitelist, RegistryPublisher stands alone here: on an
+    # exclusion list a vendor-wide rule only ever means "never flag this", so
+    # over-matching costs a missed finding rather than a broken machine. See
+    # Data\README.md.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $InstalledApp,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ExclusionEntry
+    )
+
+    if ($null -eq $InstalledApp -or $null -eq $ExclusionEntry) { return $null }
+
+    $name        = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'Name')
+    $displayName = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'DisplayName')
+    $familyName  = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'PackageFamilyName')
+    $publisher   = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'Publisher')
+    if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = $name }
+
+    foreach ($entry in $ExclusionEntry) {
+        if ($null -eq $entry) { continue }
+
+        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'AppxPackageName' -Default @())) -Value $name) { return $entry }
+        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'AppxPackageFamilyName' -Default @())) -Value $familyName) { return $entry }
+        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'RegistryDisplayName' -Default @())) -Value $displayName) { return $entry }
+        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'RegistryPublisher' -Default @())) -Value $publisher) { return $entry }
+    }
+
+    $null
 }
 
 function ConvertTo-OptimizerPackageFamilyName {
@@ -362,24 +434,44 @@ function Get-RegistryInstalledApp {
 
 function New-ScanSource {
     # One record per inventory or signal source: did it run, and if not, why not.
-    # 'Skipped' means the source was deliberately not read (not elevated, disabled
-    # on this machine); 'Failed' means it was tried and errored. Both carry a Reason
-    # a human can act on -- a source being unavailable is never silence.
+    # See $script:ScanSourceStatuses above for what the four statuses mean and
+    # which two make a scan incomplete.
+    #
+    # Reason is MANDATORY for every status except 'Succeeded'. A source that is not
+    # Succeeded and carries no reason is exactly the silent under-report this
+    # project exists to prevent: it would reach the user as an unexplained gap, or
+    # -- worse, for 'Refused' -- as a permanent omission nobody can audit. A
+    # Succeeded source is forced back to a null Reason rather than an empty string,
+    # because callers and tests distinguish the two.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [ValidateSet('Succeeded', 'Skipped', 'Failed')] [string] $Status,
+        [Parameter(Mandatory)] [ValidateSet('Succeeded', 'Skipped', 'Failed', 'Refused')] [string] $Status,
         [Parameter()] [AllowNull()] [string] $Reason,
         [Parameter()] [int] $ItemCount = 0,
         [Parameter()] [double] $DurationSeconds = 0,
         [Parameter()] [AllowNull()] [string[]] $AdditionalTypeName
     )
 
+    # Held in its own untyped variable: assigning $null back to $Reason would be
+    # re-coerced by the [string] parameter type into an empty string, and callers
+    # and tests distinguish a null Reason from an empty one.
+    $statedReason = $null
+    if ($Status -eq 'Succeeded') {
+        $statedReason = $null
+    }
+    elseif ([string]::IsNullOrWhiteSpace($Reason)) {
+        throw "Scan source '$Name' is '$Status' with no Reason. Every source that did not simply succeed has to say why in words a human can act on -- an unexplained gap is the silent under-report this project exists to prevent."
+    }
+    else {
+        $statedReason = $Reason
+    }
+
     $source = [pscustomobject]@{
         PSTypeName      = $script:ScanSourceTypeName
         Name            = $Name
         Status          = $Status
-        Reason          = $Reason
+        Reason          = $statedReason
         ItemCount       = $ItemCount
         DurationSeconds = $DurationSeconds
     }
@@ -461,22 +553,46 @@ function New-ScanResult {
 
     # Derived and read-only, the same pattern as Finding.SafetyLabel: completeness
     # cannot be set by a caller and cannot drift from what the sources reported.
+    #
+    # Both of these key on $script:ScanSourceIncompleteStatuses rather than on
+    # "anything that is not Succeeded". A 'Refused' source is a decision this
+    # project made on purpose, on every machine, forever -- counting it as an
+    # incompleteness would make IsComplete false on every run of the shipped app
+    # and spend the PARTIAL warning on a condition that can never clear.
     $result | Add-Member -MemberType ScriptProperty -Name 'IsComplete' -Value {
-        @($this.Sources | Where-Object { $_.Status -ne 'Succeeded' }).Count -eq 0
+        @($this.Sources | Where-Object { $script:ScanSourceIncompleteStatuses -contains $_.Status }).Count -eq 0
     }
 
     $result | Add-Member -MemberType ScriptProperty -Name 'IncompleteReason' -Value {
-        $unfinished = @($this.Sources | Where-Object { $_.Status -ne 'Succeeded' })
+        $unfinished = @($this.Sources | Where-Object { $script:ScanSourceIncompleteStatuses -contains $_.Status })
         if ($unfinished.Count -eq 0) { return $null }
         ($unfinished | ForEach-Object { "$($_.Name) [$($_.Status)]: $($_.Reason)" }) -join ' '
     }
 
+    # The refused sources, by name. Structured access so a caller -- notably the
+    # P4-C1 GUI -- can name the signals this project does not use without parsing
+    # SummaryText or re-deriving the status rule.
+    $result | Add-Member -MemberType ScriptProperty -Name 'RefusedSourceName' -Value {
+        [string[]] @($this.Sources | Where-Object { $_.Status -eq 'Refused' } | ForEach-Object { $_.Name })
+    }
+
     $result | Add-Member -MemberType ScriptProperty -Name 'SummaryText' -Value {
+        # Refused sources are acknowledged in one short clause: named, pointed at
+        # Sources, and never quoted at paragraph length -- the reason itself can
+        # run to several sentences and belongs on the source record, not in a
+        # one-line summary. The word PARTIAL is deliberately absent from it.
+        $refused = @($this.RefusedSourceName)
+        $refusedClause = ''
+        if ($refused.Count -gt 0) {
+            $noun = if ($refused.Count -eq 1) { 'signal' } else { 'signals' }
+            $refusedClause = " $($refused.Count) $noun not used by design ($($refused -join ', ')) -- see Sources."
+        }
+
         if ($this.IsComplete) {
-            "Complete scan of $($this.InventoryCount) $($this.ItemNoun): $(@($this.Findings).Count) $($this.FindingNoun)."
+            "Complete scan of $($this.InventoryCount) $($this.ItemNoun): $(@($this.Findings).Count) $($this.FindingNoun).$refusedClause"
         }
         else {
-            "PARTIAL scan of $($this.InventoryCount) $($this.ItemNoun): $(@($this.Findings).Count) $($this.FindingNoun) so far. $($this.IncompleteReason)"
+            "PARTIAL scan of $($this.InventoryCount) $($this.ItemNoun): $(@($this.Findings).Count) $($this.FindingNoun) so far. $($this.IncompleteReason)$refusedClause"
         }
     }
 

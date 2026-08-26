@@ -335,6 +335,15 @@ Describe 'Known-bloatware whitelist loading fails loudly' {
         { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage '*unknown match field*'
     }
 
+    It 'reports an empty match block in its own words, not in strict mode''s' {
+        # $match.PSObject.Properties.Name throws "the property 'Name' cannot be
+        # found" under Set-StrictMode -Version Latest when the collection is EMPTY,
+        # which turned a bad list entry into a message about nothing. Cosmetic --
+        # it threw either way -- but the loader has to be the one talking.
+        $path = New-TestWhitelist -Content '{ "entries": [ { "id": "x", "displayName": "X", "vendor": "V", "reason": "R", "match": { } } ] }'
+        { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage "*empty 'match' block*"
+    }
+
     It 'throws when registryPublisher is used without registryDisplayName' {
         $path = New-TestWhitelist -Content '{ "entries": [ { "id": "x", "displayName": "X", "vendor": "V", "reason": "R", "match": { "registryPublisher": ["Some Vendor"] } } ] }'
         { Get-KnownBloatwareList -Path $path } | Should -Throw -ExpectedMessage '*without*registryDisplayName*'
@@ -832,6 +841,25 @@ Describe 'Invoke-OemBloatwareScan completeness' {
         $provisioned.Status | Should -Be 'Skipped'
         $provisioned.Reason | Should -Match 'administrator'
         $scan.SummaryText   | Should -Match 'PARTIAL'
+    }
+
+    It 'reports the not-elevated source as Skipped, never as Refused' {
+        # The safety property behind the Refused status added in chunk P2-C2:
+        # 'Refused' means "this project will never use this signal, on any machine,
+        # at any privilege level". Elevation is environmental -- it could have gone
+        # the other way on the very next run -- so it must never borrow the status
+        # that stops a scan being called incomplete. If this ever flips, a
+        # non-elevated scan starts claiming to be complete while seeing less than
+        # the truth.
+        Mock -ModuleName Win11Optimizer.Engine -CommandName Test-IsElevated -MockWith { $false }
+
+        $scan = Invoke-OemBloatwareScan -WarningAction SilentlyContinue
+
+        $provisioned = @($scan.Sources | Where-Object { $_.Name -eq 'AppxProvisionedPackage' })[0]
+        $provisioned.Status | Should -Be 'Skipped'
+        $provisioned.Status | Should -Not -Be 'Refused'
+        @($scan.RefusedSourceName).Count | Should -Be 0
+        $scan.IsComplete    | Should -BeFalse
     }
 
     It 'warns on the warning stream when the scan is incomplete' {

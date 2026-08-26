@@ -658,4 +658,10 @@ Export-ModuleMember -Function @(
     'Get-AppUsageClassification'
     'Find-UnusedApp'
     'Invoke-UnusedAppScan'
+
+    # P2-C2 — StartupItem / Service detector (Detectors/StartupItems.ps1)
+    'Get-KnownStartupItemList'
+    'Get-StartupItemInventory'
+    'Find-UnwantedStartupItem'
+    'Invoke-StartupItemScan'
 )

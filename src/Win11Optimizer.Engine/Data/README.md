@@ -236,3 +236,95 @@ unused, full stop.
 An app can legitimately appear on both lists in different roles. Being excluded here
 does not stop `known-bloatware.json` producing an `OemBloatware` Finding for the same
 app; the two detectors stay independent and grouping is P4-C1's job.
+
+---
+
+## `known-startup-items.json`
+
+The curated list behind the `StartupItem` / `Service` detector (chunk P2-C2). It is
+the shortest list in this folder on purpose.
+
+An entry here is a claim about a specific **autostart entry**, not about the
+application it belongs to. That distinction is the whole list: almost everything a
+person installs deliberately adds a startup entry, so "it runs at logon" is not
+evidence of anything. On the development machine, sixteen Run-key entries, two
+non-OS scheduled tasks and twenty non-OS automatic services were all there because
+the user put them there, and none of them is on this list.
+
+Loaded by `Get-KnownStartupItemList`, which validates every rule below and
+**throws** on any violation — same treatment as the other two lists, for the same
+reason. A list that silently failed to load would leave the detector running on the
+orphan rule alone, which looks exactly like a machine with nothing to flag.
+
+The detector produces Findings from exactly two things: an entry on this list, and
+an **orphan** — a startup entry whose target executable is proved absent from disk.
+Orphans need no list entry; the evidence is a filesystem fact.
+
+### Entry shape
+
+```jsonc
+{
+  "id": "vendor-entry-slug",     // required, unique, stable
+  "displayName": "…",            // required — what the review UI shows
+  "vendor": "…",                 // required — who ships the entry
+  "reason": "Why this specific autostart entry is not worth running.",
+  "provenance": "published",     // required — "measured" or "published"
+  "requiresConsent": true,       // optional, JSON boolean. Absent = false
+  "note": "…",                   // optional, for maintainers; not shown to the user
+  "match": { … }                 // required, at least one rule
+}
+```
+
+`provenance` is required here, where the OEM whitelist's `evidenceSource` is
+optional: this list has no `measured` entries at all yet, and the fact that every
+row on it comes from a published source rather than from real hardware must be
+impossible to overlook. A `published` entry adds a line to the Finding's `Evidence`
+saying so.
+
+### Match rules
+
+| field                   | matched against                              | mechanism        |
+| ----------------------- | -------------------------------------------- | ---------------- |
+| `runValueName`          | the Run/RunOnce value name                   | Run keys         |
+| `startupFolderFileName` | the file name in a Startup folder            | Startup folders  |
+| `scheduledTaskName`     | the task's leaf name                         | Scheduled tasks  |
+| `serviceName`           | the service key name                         | Services         |
+| `serviceDisplayName`    | the service `DisplayName`                    | Services         |
+| `targetFileName`        | the resolved target's file name              | all four         |
+
+Same pattern dialect as the other two lists, enforced by the same primitives in
+`Shared/Inventory.ps1`, with two extra rules of its own:
+
+- **`scheduledTaskName` may not contain a path separator.** Entries name a task,
+  never a path. Which task namespaces are off limits is decided in code
+  (`\Microsoft\Windows\` always is), so no list edit can reach into the OS.
+- **`targetFileName` may not contain a wildcard.** Executable names are exact
+  strings. `Update*` would match the updater of every product on the machine;
+  `Update.exe`, `setup.exe` and `crashpad_handler.exe` each appear in several
+  install folders on the development machine alone.
+
+### What must never go on this list
+
+Everything in the whitelist section above applies, plus three that are specific to
+startup entries:
+
+- **Updaters are not bloat.** `Adobe ARM`, `edgeupdate`, `GoogleUpdate`,
+  `BraveUpdate` and the like keep software patched. An updater that stops running
+  is a machine that stops getting security fixes, and that is a worse outcome than
+  a few seconds of boot time. The `adobe-reader-speed-launcher` entry exists partly
+  to draw the line: the *preloader* is on the list, the *updater* from the same
+  vendor is deliberately not.
+- **Anything a user would notice missing.** A launcher, sync client or chat app
+  that autostarts is doing what its owner asked of it.
+- **Anything already covered structurally.** Drivers, security software, anti-cheat
+  and OEM firmware utilities are excluded from the service path by
+  `unused-app-exclusions.json` and by the service-type check in code, and OS tasks
+  by the namespace rule. Restating them here would be a second vendor list.
+
+### The enabled/disabled state is not on this list either
+
+Windows records whether the user has already turned a startup entry off, under
+`…\Explorer\StartupApproved\`. An entry that is already off never becomes a Finding
+whatever this list says, and an entry whose recorded state cannot be decoded is
+treated as *unknown* and is likewise never flagged. Both rules live in code. See
+`docs/handoff/05-startup-items.report.md` for the measured encoding.

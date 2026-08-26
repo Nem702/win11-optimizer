@@ -192,7 +192,7 @@ function New-UnusedAppScanSource {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [ValidateSet('Succeeded', 'Skipped', 'Failed')] [string] $Status,
+        [Parameter(Mandatory)] [ValidateSet('Succeeded', 'Skipped', 'Failed', 'Refused')] [string] $Status,
         [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $Reason,
         [Parameter()] [int] $ItemCount = 0,
         [Parameter()] [double] $DurationSeconds = 0
@@ -676,7 +676,14 @@ function Get-UnusedAppExclusionList {
         $rules = @{}
         foreach ($field in $script:UnusedAppMatchFields) { $rules[$field] = @() }
 
-        foreach ($field in @($match.PSObject.Properties.Name)) {
+        # Enumerated one property at a time rather than as $match.PSObject.Properties.Name:
+        # under Set-StrictMode -Version Latest, member enumeration of .Name over an
+        # EMPTY property collection throws "the property 'Name' cannot be found",
+        # so an entry declaring "match": {} would fail with a parser-level message
+        # instead of the one that says what is actually wrong.
+        $declaredFields = @($match.PSObject.Properties | ForEach-Object { $_.Name })
+
+        foreach ($field in $declaredFields) {
             if ($script:UnusedAppMatchFields -notcontains $field) {
                 throw "Unused-app exclusion list '$Path': $where declares unknown match field '$field'. Allowed: $($script:UnusedAppMatchFields -join ', ')."
             }
@@ -718,33 +725,19 @@ function Get-UnusedAppExclusionList {
 }
 
 function Get-UnusedAppExclusionMatch {
-    # Returns the first exclusion entry an app matches, or $null. Unlike the OEM
-    # whitelist, registryPublisher stands alone here -- see the note on
-    # $script:UnusedAppMatchFields.
+    # This detector's name for the shared matcher. The body moved to
+    # Shared\Inventory.ps1 as Get-OptimizerExclusionMatch when chunk P2-C2 became
+    # its second caller (it matches services against the same list); the name stays
+    # here so P2-C3's call sites read the way they always did. Unlike the OEM
+    # whitelist, registryPublisher stands alone on an exclusion list -- see the note
+    # on $script:UnusedAppMatchFields.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowNull()] $InstalledApp,
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ExclusionEntry
     )
 
-    if ($null -eq $InstalledApp -or $null -eq $ExclusionEntry) { return $null }
-
-    $name        = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'Name')
-    $displayName = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'DisplayName')
-    $familyName  = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'PackageFamilyName')
-    $publisher   = [string](Get-OptimizerProperty -InputObject $InstalledApp -Name 'Publisher')
-    if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = $name }
-
-    foreach ($entry in $ExclusionEntry) {
-        if ($null -eq $entry) { continue }
-
-        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'AppxPackageName' -Default @())) -Value $name) { return $entry }
-        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'AppxPackageFamilyName' -Default @())) -Value $familyName) { return $entry }
-        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'RegistryDisplayName' -Default @())) -Value $displayName) { return $entry }
-        if (Test-OptimizerAnyPatternMatch -Pattern ([string[]](Get-OptimizerProperty -InputObject $entry -Name 'RegistryPublisher' -Default @())) -Value $publisher) { return $entry }
-    }
-
-    $null
+    Get-OptimizerExclusionMatch -InstalledApp $InstalledApp -ExclusionEntry $ExclusionEntry
 }
 
 #endregion
@@ -1140,15 +1133,20 @@ function Invoke-UnusedAppScan {
         curated exclusion list, so a Finding count of zero can be told apart from
         an exclusion list that swallowed everything.
 
-        SIGNALS. Each is reported in Sources with the same Succeeded / Skipped /
-        Failed vocabulary the OEM detector uses, and a signal being off is a
-        Skipped with a reason a human can act on, never silence:
+        SIGNALS. Each is reported in Sources with the shared Succeeded / Skipped /
+        Failed / Refused vocabulary, and a signal being off is a Skipped with a
+        reason a human can act on, never silence:
 
           UserAssist            per-user shell launch history. No elevation needed.
           Prefetch              per-machine launch history. Needs administrator
-                                rights to read, and can be turned off.
-          FileSystemLastAccess  always Skipped. See Get-UnusedAppLastAccessStatus
-                                for the measurement behind that decision.
+                                rights to read, and can be turned off. Skipped when
+                                unreadable -- that is environmental, so it does make
+                                the scan incomplete.
+          FileSystemLastAccess  always Refused: this project will not use the signal
+                                on any machine at any privilege level. It stays in
+                                Sources with the measurement behind the decision (see
+                                Get-UnusedAppLastAccessStatus) and does NOT make the
+                                scan incomplete.
 
         Provisioned (all-users) Appx packages are deliberately NOT inventoried
         here. A provisioned package that is not registered for this user has no
@@ -1313,12 +1311,18 @@ function Invoke-UnusedAppScan {
     }
 
     # --- Signal 3: filesystem last-access (never used; see the reason) ---------
+    # 'Refused', not 'Skipped': this project has decided never to use this signal,
+    # on any machine, at any privilege level. It was 'Skipped' until chunk P2-C2,
+    # which meant a fully-elevated scan with every real signal succeeding still
+    # reported itself PARTIAL -- forever, on every machine. The measurement stays
+    # in Sources with its full reason; it just stops being called an
+    # incompleteness. See docs\STATE.md 2026-08-25.
     $lastAccess = Get-UnusedAppLastAccessStatus
-    $sources.Add((New-UnusedAppScanSource -Name $script:UnusedAppSignalLastAccess -Status 'Skipped' `
+    $sources.Add((New-UnusedAppScanSource -Name $script:UnusedAppSignalLastAccess -Status 'Refused' `
         -Reason $lastAccess.Reason))
 
     foreach ($source in $sources) {
-        $level = if ($source.Status -eq 'Succeeded') { 'Info' } else { 'Warning' }
+        $level = if ($script:ScanSourceIncompleteStatuses -contains $source.Status) { 'Warning' } else { 'Info' }
         Write-OptimizerLog -EventName 'UnusedAppScanSource' -Level $level `
             -Message "Source $($source.Name): $($source.Status)." `
             -Data ([ordered]@{

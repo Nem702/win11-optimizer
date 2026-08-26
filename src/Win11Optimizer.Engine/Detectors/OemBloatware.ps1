@@ -250,7 +250,14 @@ function Get-KnownBloatwareList {
         $rules = @{}
         foreach ($field in $script:OemMatchFields) { $rules[$field] = @() }
 
-        foreach ($field in @($match.PSObject.Properties.Name)) {
+        # Enumerated one property at a time rather than as $match.PSObject.Properties.Name:
+        # under Set-StrictMode -Version Latest, member enumeration of .Name over an
+        # EMPTY property collection throws "the property 'Name' cannot be found",
+        # so an entry declaring "match": {} would fail with a parser-level message
+        # instead of the one that says what is actually wrong.
+        $declaredFields = @($match.PSObject.Properties | ForEach-Object { $_.Name })
+
+        foreach ($field in $declaredFields) {
             if ($script:OemMatchFields -notcontains $field) {
                 throw "Known-bloatware whitelist '$Path': $where declares unknown match field '$field'. Allowed: $($script:OemMatchFields -join ', ')."
             }
@@ -672,7 +679,7 @@ function Invoke-OemBloatwareScan {
     }
 
     foreach ($source in $sources) {
-        $level = if ($source.Status -eq 'Succeeded') { 'Info' } else { 'Warning' }
+        $level = if ($script:ScanSourceIncompleteStatuses -contains $source.Status) { 'Warning' } else { 'Info' }
         Write-OptimizerLog -EventName 'OemScanSource' -Level $level `
             -Message "Source $($source.Name): $($source.Status)." `
             -Data ([ordered]@{
