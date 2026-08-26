@@ -48,6 +48,12 @@
         'Get-StartupItemInventory'
         'Find-UnwantedStartupItem'
         'Invoke-StartupItemScan'
+
+        # P2-C4 - JunkFile detector
+        'Get-JunkLocationList'
+        'Get-JunkLocationInventory'
+        'Find-JunkFileLocation'
+        'Invoke-JunkFileScan'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

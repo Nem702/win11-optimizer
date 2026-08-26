@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "user-temp",
+      "displayName": "Per-user temporary files",
+      "owner": "Windows and every application you run",
+      "reason": "The folder Windows hands to applications for scratch files. Programs are supposed to clean up after themselves and routinely do not, so what is left behind is the debris of installers, updaters and archive tools that have already finished. Files still being written, still held open, or newer than the age window are never included.",
+      "provenance": "measured",
+      "paths": [ "%TEMP%" ]
+    },
+    {
+      "id": "windows-temp",
+      "displayName": "System temporary files",
+      "owner": "Windows services and installers running as SYSTEM",
+      "reason": "The same idea as the per-user temp folder, but for code running as the system account: service installers, servicing operations and driver packages. It is a different folder with a different owner, and reading it needs administrator rights.",
+      "provenance": "measured",
+      "paths": [ "%SystemRoot%\\Temp" ]
+    },
+    {
+      "id": "windows-update-download",
+      "displayName": "Windows Update download cache",
+      "owner": "Windows Update",
+      "reason": "Installer payloads Windows Update has already downloaded. Windows keeps them after an update is installed and re-downloads anything it still needs, so old payloads here are finished work rather than pending work. Anything staged for an update that has not been applied yet is newer than the age window and is left alone.",
+      "provenance": "measured",
+      "paths": [ "%SystemRoot%\\SoftwareDistribution\\Download" ]
+    },
+    {
+      "id": "delivery-optimization-cache",
+      "displayName": "Delivery Optimization cache",
+      "owner": "Delivery Optimization service",
+      "reason": "Update payloads Windows keeps so it can share them with other PCs on your network. It is a peer-to-peer cache: everything in it can be fetched again, and the service rebuilds it on its own.",
+      "provenance": "published",
+      "paths": [ "%SystemRoot%\\SoftwareDistribution\\DeliveryOptimization" ]
+    },
+    {
+      "id": "windows-error-reporting-queue",
+      "displayName": "Windows Error Reporting queues",
+      "owner": "Windows Error Reporting",
+      "reason": "Crash reports queued for sending to Microsoft, and the archive of ones already sent. They are diagnostic copies rather than the only record, and Windows does not need them to keep working. If you are actively investigating a crash on this machine, keep them and deselect this row.",
+      "provenance": "measured",
+      "paths": [
+        "%ProgramData%\\Microsoft\\Windows\\WER\\ReportQueue",
+        "%ProgramData%\\Microsoft\\Windows\\WER\\ReportArchive",
+        "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\ReportQueue",
+        "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\ReportArchive"
+      ]
+    },
+    {
+      "id": "servicing-logs",
+      "displayName": "Component servicing logs (CBS and DISM)",
+      "owner": "Windows servicing stack",
+      "reason": "Text logs written by the component store while installing updates and optional features. They are a troubleshooting record only; nothing reads them back, and the servicing stack starts new ones. The log Windows is writing to right now is normally held open, and is skipped for that reason.",
+      "provenance": "measured",
+      "paths": [
+        "%SystemRoot%\\Logs\\CBS",
+        "%SystemRoot%\\Logs\\DISM"
+      ]
+    },
+    {
+      "id": "windows-upgrade-leftovers",
+      "displayName": "Windows upgrade working folders",
+      "owner": "Windows Setup",
+      "reason": "Working folders Windows Setup creates while upgrading to a new build and does not always remove afterwards. They can hold several gigabytes and are only meaningful during an upgrade that is still in progress, which the age window excludes.",
+      "provenance": "published",
+      "paths": [
+        "%SystemDrive%\\$WINDOWS.~BT",
+        "%SystemDrive%\\$Windows.~WS"
+      ]
+    },
+    {
+      "id": "thumbnail-and-icon-cache",
+      "displayName": "Explorer thumbnail and icon cache",
+      "owner": "Windows Explorer",
+      "reason": "The database Explorer uses so it does not have to regenerate picture thumbnails and program icons every time. It is derived entirely from files you already have. Emptying it costs a slower first browse of a folder full of photos and nothing else; Explorer usually holds parts of it open, and those parts are skipped.",
+      "provenance": "measured",
+      "paths": [ "%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer" ]
+    },
+    {
+      "id": "chrome-http-cache",
+      "displayName": "Google Chrome web cache",
+      "owner": "Google Chrome",
+      "reason": "Copies of web-page content Chrome keeps so pages load faster the second time, plus the compiled-JavaScript cache beside it. Both are rebuilt from the sites you visit. This entry names those two folders inside each profile and nothing else: cookies, history, saved passwords, bookmarks and extension data are in different folders and are never touched.",
+      "provenance": "measured",
+      "paths": [ "%LOCALAPPDATA%\\Google\\Chrome\\User Data" ],
+      "profileChildPath": [ "Cache\\Cache_Data", "Code Cache\\js", "Code Cache\\wasm" ]
+    },
+    {
+      "id": "edge-http-cache",
+      "displayName": "Microsoft Edge web cache",
+      "owner": "Microsoft Edge",
+      "reason": "The same two cache folders Chrome uses, in the Edge profile folders: cached web content and compiled JavaScript, both rebuilt from the sites you visit. Cookies, history, saved passwords, favourites and extension data live elsewhere and are never touched.",
+      "provenance": "measured",
+      "paths": [ "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data" ],
+      "profileChildPath": [ "Cache\\Cache_Data", "Code Cache\\js", "Code Cache\\wasm" ]
+    },
+    {
+      "id": "brave-http-cache",
+      "displayName": "Brave web cache",
+      "owner": "Brave",
+      "reason": "The same two cache folders Chrome uses, in the Brave profile folders: cached web content and compiled JavaScript, both rebuilt from the sites you visit. Cookies, history, saved passwords, bookmarks, extension data and any wallet data live elsewhere and are never touched.",
+      "provenance": "measured",
+      "paths": [ "%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data" ],
+      "profileChildPath": [ "Cache\\Cache_Data", "Code Cache\\js", "Code Cache\\wasm" ]
+    },
+    {
+      "id": "firefox-http-cache",
+      "displayName": "Mozilla Firefox web cache",
+      "owner": "Mozilla Firefox",
+      "reason": "Firefox keeps its disk cache in a folder of its own, separate from the profile data that holds cookies, history, saved logins and bookmarks. Only the cache folder is named here, and Firefox rebuilds it from the sites you visit.",
+      "provenance": "published",
+      "paths": [ "%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles" ],
+      "profileChildPath": [ "cache2\\entries" ]
+    },
+    {
+      "id": "recycle-bin",
+      "displayName": "Recycle Bin",
+      "owner": "you",
+      "reason": "Files you deleted and can still get back. This tool reports what is in it so you can see the size, and never offers to empty it: everything in here was put there by a person, and the Recycle Bin is the undo button for exactly that decision. Empty it from Explorer when you mean to.",
+      "provenance": "measured",
+      "resolver": "recycleBin",
+      "inventoryOnly": true
+    },
+    {
+      "id": "prefetch",
+      "displayName": "Windows Prefetch data",
+      "owner": "Windows",
+      "reason": "Windows records which files each program needs at startup so it can load them faster next time. This tool reads that same data as evidence of which applications you actually use, so deleting it would blind the unused-application scan. It is reported here for size only and is never offered for removal.",
+      "provenance": "measured",
+      "paths": [ "%SystemRoot%\\Prefetch" ],
+      "inventoryOnly": true
+    },
+    {
+      "id": "nvidia-shader-cache",
+      "displayName": "NVIDIA shader cache",
+      "owner": "NVIDIA display driver",
+      "reason": "Compiled shaders the display driver keeps so games and applications do not have to build them again. It is regenerated automatically, but it belongs to the driver, which is meant to bound its own size, and rebuilding it costs stuttering in every game until it refills. Reported for size only until this project has measured what deleting it actually costs.",
+      "provenance": "measured",
+      "paths": [
+        "%LOCALAPPDATA%\\NVIDIA\\DXCache",
+        "%LOCALAPPDATA%\\NVIDIA\\GLCache"
+      ],
+      "inventoryOnly": true
+    }
+  ]
+}

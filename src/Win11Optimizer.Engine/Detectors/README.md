@@ -7,7 +7,7 @@ One file per sweep category, added by the Phase 2 chunks in `docs/PLAN.md`:
 | `OemBloatware.ps1`    | P2-C1, P2-C1a | `OemBloatware` | done |
 | `StartupItems.ps1`    | P2-C2 | `StartupItem`, `Service` | done |
 | `UnusedApps.ps1`      | P2-C3 | `UnusedApp`    | done        |
-| `JunkFiles.ps1`       | P2-C4 | `JunkFile`     | planned     |
+| `JunkFiles.ps1`       | P2-C4 | `JunkFile`     | done        |
 
 Every `.ps1` in this folder is dot-sourced by `Win11Optimizer.Engine.psm1` at
 import time, **after** everything in `..\Shared\`. A detector must:
@@ -80,4 +80,36 @@ Three more, added by chunk P2-C2:
   returns `$false` for a path the caller may not look at, exactly as
   `Get-ChildItem` does on an unreadable folder. A missing file is only believed
   once the containing directory has been *listed successfully*; otherwise the
-  answer is `$null` and the entry is inventory, never a Finding.
+  answer is `$null` and the entry is inventory, never a Finding. **Promoted to
+  `..\Shared\Inventory.ps1` as `Test-OptimizerPathPresent` by P2-C4** on its second
+  consumer, with `-PathType File | Directory | Any`; the old name is a one-line
+  delegation.
+
+Four more, added by chunk P2-C4 — the first detector that points at **files**:
+
+- **The unit of judgement is the location, not the file.** `JunkFiles.ps1` returns
+  one Finding per curated location (`Id` = the location's curated id), never one per
+  file. `%TEMP%` holds ~2,000 files here and the browser caches ~24,000; a Finding
+  each is unreviewable in P4-C1 and would make one category larger than the other
+  four combined. The count and size go in the evidence, and the enumerated file list
+  hangs off the Finding as `EligibleFile`. **P3-C1: `FileDelete` means "delete this
+  set", not "delete this path".**
+- **Never traverse a reparse point.** A junction inside a scoped location can point
+  anywhere. This is not theoretical: on the development machine the *Recycle Bin*
+  holds `$RZVJK9R.old\Users\All Users` and `…\Default User`, junctions to
+  `C:\ProgramData` and `C:\Users\Default` — a walk that followed them would have
+  sized two system folders and reported them under a Recycle Bin evidence line.
+  Detect (`FileAttributes.ReparsePoint`), exclude from the size *and* the file list,
+  and count them.
+- **Never recurse with `SearchOption.AllDirectories`.** Measured P2-C4 on the
+  Windows Error Reporting archive un-elevated:
+  `[System.IO.Directory]::GetFiles(path, '*', AllDirectories)` **threw and returned
+  nothing**, while an explicit per-directory walk returned the files it could see
+  and counted the 150 folders it could not. A location whose subtree could not be
+  fully listed reports its size as an explicit **floor**, never a quietly smaller
+  total.
+- **A location that is absent is not a location that is incomplete.** A path proved
+  absent (via the tri-state probe) is `Succeeded` with zero items; only a path that
+  could not be *read* is `Skipped`. Getting this backwards is the PARTIAL-forever
+  bug from `docs/STATE.md` in new clothes — every machine without Firefox would warn
+  that its scan was incomplete, on every run, forever.

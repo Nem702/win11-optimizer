@@ -10,6 +10,7 @@
       * the registry uninstall walk, all 3 views (Get-RegistryInstalledApp)
       * the per-source status record             (New-ScanSource)
       * the scan-result wrapper                  (New-ScanResult)
+      * the tri-state path existence probe       (Test-OptimizerPathPresent)
 
     READ-ONLY. Nothing in this file writes, uninstalls or deletes anything.
     Win32_Product / WMI is deliberately never used: it triggers an MSI
@@ -601,6 +602,122 @@ function New-ScanResult {
     }
 
     $result
+}
+
+#endregion
+
+#region Filesystem probes
+
+# How far up the tree Test-OptimizerPathPresent will walk looking for a directory
+# it can actually list. Bounded so a pathological path cannot spin. Promoted here
+# from Detectors\StartupItems.ps1 with the probe below.
+$script:OptimizerPathProbeDepth = 8
+
+function Test-OptimizerPathPresent {
+    <#
+        Tri-state existence probe: $true present, $false PROVED absent, $null
+        undeterminable.
+
+        Promoted out of Detectors\StartupItems.ps1 by chunk P2-C4 on its second
+        consumer, the way Get-OptimizerExclusionMatch was promoted by P2-C2:
+        moved here, with a one-line delegation left behind so the existing call
+        sites and their tests are untouched. The junk detector needs the same
+        answer about DIRECTORIES, hence -PathType.
+
+        Everything that acts on "it is not there" rests on this returning $false
+        only when the thing is genuinely gone. [System.IO.File]::Exists and
+        [System.IO.Directory]::Exists both return $false for a path the current
+        user is not allowed to look at, exactly as REVIEW.md records
+        Get-ChildItem doing on Prefetch -- so a bare Exists() check reports every
+        entry under a locked-down folder as absent. For the startup detector that
+        meant offering to delete working software; for the junk detector it would
+        mean reporting a location as "not on this machine" when it is merely
+        unreadable at this privilege level.
+
+        So an absent path is only believed once the containing directory has been
+        successfully LISTED. Listing throws UnauthorizedAccessException where a
+        bare Exists() would have quietly said "not there". If no ancestor can be
+        listed, the answer is $null.
+
+        The walk returns $false as soon as a parent is listable, without looking
+        at what the listing contained: by that point Exists() has already said no
+        for the requested PathType, so an entry of the OTHER type with the same
+        name (a directory where a file was asked for) still means the requested
+        thing is absent.
+    #>
+    [CmdletBinding()]
+    [OutputType([Nullable[bool]])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path,
+        [Parameter()] [ValidateSet('File', 'Directory', 'Any')] [string] $PathType = 'File'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+
+    try {
+        if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
+
+        $found = $false
+        if ($PathType -ne 'Directory') { $found = [System.IO.File]::Exists($Path) }
+        if (-not $found -and $PathType -ne 'File') { $found = [System.IO.Directory]::Exists($Path) }
+        if ($found) { return [Nullable[bool]] $true }
+    }
+    catch {
+        Write-Verbose "Could not probe path '$Path': $($_.Exception.Message)"
+        return $null
+    }
+
+    # Not found. Prove we can actually see the folder it should be in, walking up
+    # until something is listable.
+    $current = $Path
+    for ($depth = 0; $depth -lt $script:OptimizerPathProbeDepth; $depth++) {
+        $parent = $null
+        try { $parent = [System.IO.Path]::GetDirectoryName($current) } catch { return $null }
+        if ([string]::IsNullOrWhiteSpace($parent)) { return $null }
+
+        $leaf = $null
+        try { $leaf = [System.IO.Path]::GetFileName($current) } catch { return $null }
+        if ([string]::IsNullOrWhiteSpace($leaf)) { return $null }
+
+        try {
+            # A search pattern rather than a full listing: same permission
+            # semantics, without enumerating a directory that might hold 100k
+            # files. Throws DirectoryNotFoundException when $parent is absent and
+            # UnauthorizedAccessException when it is merely unreadable, and those
+            # two mean opposite things here.
+            $null = [System.IO.Directory]::GetFileSystemEntries($parent, $leaf)
+            return [Nullable[bool]] $false
+        }
+        catch [System.IO.DirectoryNotFoundException] {
+            $current = $parent
+            continue
+        }
+        catch {
+            Write-Verbose "Could not list '$parent' while probing '$Path': $($_.Exception.Message)"
+            return $null
+        }
+    }
+
+    $null
+}
+
+function Get-OptimizerInnerException {
+    # PowerShell wraps an exception thrown by a .NET METHOD in a
+    # MethodInvocationException, so $_.Exception.GetType().Name reads
+    # 'MethodInvocationException' for every [System.IO.Directory]:: failure and
+    # the reason a source reports says nothing about what actually went wrong.
+    # Returns the innermost real exception.
+    [CmdletBinding()]
+    [OutputType([System.Exception])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Exception
+    )
+
+    $current = $Exception
+    while ($null -ne $current -and $current -is [System.Management.Automation.MethodInvocationException] -and $null -ne $current.InnerException) {
+        $current = $current.InnerException
+    }
+    $current
 }
 
 #endregion

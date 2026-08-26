@@ -328,3 +328,111 @@ Windows records whether the user has already turned a startup entry off, under
 whatever this list says, and an entry whose recorded state cannot be decoded is
 treated as *unknown* and is likewise never flagged. Both rules live in code. See
 `docs/handoff/05-startup-items.report.md` for the measured encoding.
+
+---
+
+## `junk-locations.json`
+
+The curated list behind the `JunkFile` detector (chunk P2-C4). It is the only list
+in this folder that points at **files** rather than at software, which makes it the
+most dangerous one here: an `OemBloatware` false positive costs a reinstall, and a
+`JunkFile` false positive costs data that has no undo.
+
+Two rules carry most of that weight, and both are enforced in **code**
+(`Detectors/JunkFiles.ps1`) rather than by anything on this list, so no future edit
+to this file can reach them:
+
+- **The known user folders are rejected outright.** `Downloads`, `Documents`,
+  `Desktop`, `Pictures`, `Videos`, `Music` — an entry that resolves inside one, or
+  that *contains* one, fails the whole load. Not "flagged with consent", not
+  "reported as inventory": a tool that offers to clean the Downloads folder is a
+  tool that deletes someone's tax return. `WinSxS`, the profile root, the Windows
+  folder and the drive roots go the same way.
+- **`%SystemRoot%\Prefetch` is forced to inventory-only.** P2-C3 reads `.pf` files
+  as evidence of which applications are used, and `docs/STATE.md` Q11 measured what
+  losing them costs. The junk detector never offers to delete evidence another
+  detector relies on.
+
+Loaded by `Get-JunkLocationList`, which validates every rule below and **throws** on
+any violation — the same treatment the other three lists get, and here the stakes
+are the plainest: a list that silently failed to load would yield zero locations,
+which looks exactly like a clean disk.
+
+### Entry shape
+
+```jsonc
+{
+  "id": "user-temp",              // required, unique, stable — becomes the Finding's Id
+  "displayName": "…",             // required — what the review UI shows
+  "owner": "…",                   // optional — who writes into this folder
+  "reason": "Why this is junk.",  // required — copied into the Finding's Evidence
+  "provenance": "measured",       // required — "measured" or "published"
+  "inventoryOnly": true,          // optional, JSON boolean. Absent = false
+  "resolver": "recycleBin",       // optional — "path" (default) or "recycleBin"
+  "paths": [ "%TEMP%" ],          // required unless a resolver is declared
+  "profileChildPath": [ "Cache\\Cache_Data" ],  // optional — see below
+  "note": "…"                     // optional, for maintainers
+}
+```
+
+**The unit of judgement is the location, not the file.** One Finding per entry,
+never one per file: `%TEMP%` holds ~2,000 files on the development machine and a
+Finding each would be unreviewable in P4-C1. The file count and total size go in the
+Finding's evidence, and the enumerated file list hangs off the Finding as
+`EligibleFile`. **For P3-C1 this means `RemovalMethod = 'FileDelete'` refers to that
+set of files, not to the path.**
+
+`provenance` works exactly as it does on `known-startup-items.json`, and this is the
+first list in the project that carries `measured` entries — the evidence is on this
+disk rather than on a factory image nobody here has. A `published` entry adds a line
+to the Finding's evidence saying the location has never been observed holding
+anything on real hardware.
+
+### Paths
+
+Every path is expanded with `ExpandEnvironmentVariables`, so entries name
+`%TEMP%`, `%SystemRoot%\Temp`, `%LOCALAPPDATA%\…` and never a literal `C:\Users\…`.
+A path containing `..` is rejected: a junk location is named outright, never reached
+by walking upwards out of one.
+
+`profileChildPath` exists for browser caches. The entry names the browser's
+`User Data` folder and the **exact** cache folders inside a profile; the detector
+enumerates the immediate subdirectories of `User Data` to find the profiles, and
+takes only those named child folders from each. Hard-coding `Default` instead was
+considered and rejected — Chrome has four profile folders on the development machine
+and `Default` holds only 636 MB of the 1.68 GB in its cache, so naming `Default`
+alone would have missed the other ~1.06 GB **without saying so**.
+
+Browser entries cover **cache only**. Cookies, history, saved logins, bookmarks and
+extension data live in other folders inside the same profile and are never named.
+
+`resolver` is a closed set of two: `path` (the default) and `recycleBin`, which is
+code because the Recycle Bin is one folder per fixed drive named after the current
+user's SID and no environment variable spells it.
+
+### `inventoryOnly` — sized and reported, never flagged
+
+Three entries ship with it, for three different reasons:
+
+| entry | why it is never a Finding |
+| --- | --- |
+| `recycle-bin` | it is the user's own undo buffer; everything in it was put there by a person |
+| `prefetch` | another detector reads it as evidence — **forced in code**, not by this flag |
+| `nvidia-shader-cache` | 34.8 GB here, driver-managed, and this project has not measured what rebuilding it costs |
+
+Reporting them matters as much as not flagging them: "Recycle Bin: 2.3 MB, not
+flagged" is a number the user wants, and a silently absent Recycle Bin is the
+failure mode this project is built against.
+
+### What must never go on this list
+
+- **Any folder the user saves into.** Rejected in code, as above.
+- **`WinSxS` / the component store.** DISM's alone; getting it wrong breaks servicing.
+- **`Windows.old`.** It is the "go back to the previous version" path.
+- **Shadow copies / restore points.** P3-C2's rollback assumes they exist.
+- **The page file, the hibernation file, and crash dumps.** The first two are
+  reclaimed by configuration rather than deletion, and a dump is evidence if the
+  machine is crashing.
+- **Installer caches** — `%ProgramData%\Package Cache` and friends. They are what a
+  repair or an uninstall reads.
+- **Anything whose contents another detector in this project reads.**

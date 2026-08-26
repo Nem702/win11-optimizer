@@ -210,9 +210,8 @@ $script:StartupInventoryTypeName  = 'Win11Optimizer.StartupInventory'
 $script:StartupItemTypeName       = 'Win11Optimizer.StartupItem'
 $script:StartupEntryTypeName      = 'Win11Optimizer.KnownStartupItemEntry'
 
-# How far up the tree Test-StartupTargetPresent will walk looking for a directory
-# it can actually list. Bounded so a pathological path cannot spin.
-$script:StartupTargetProbeDepth = 8
+# The probe depth that used to live here moved into Shared, next to
+# Test-OptimizerPathPresent ($script:OptimizerPathProbeDepth), chunk P2-C4.
 
 #endregion
 
@@ -377,19 +376,15 @@ function Get-StartupTargetPath {
 function Test-StartupTargetPresent {
     <#
         Tri-state existence probe: $true present, $false PROVED absent, $null
-        undeterminable.
+        undeterminable. The whole orphan rule rests on this returning $false only
+        when the file is genuinely gone.
 
-        The whole orphan rule rests on this returning $false only when the file is
-        genuinely gone. [System.IO.File]::Exists returns $false for a path the
-        current user is not allowed to look at, exactly as REVIEW.md records
-        Get-ChildItem doing on Prefetch -- so a bare Exists() check would report
-        every entry under a locked-down folder as an orphan and offer to delete
-        working software.
-
-        So an absent file is only believed once the containing directory has been
-        successfully LISTED. Listing throws UnauthorizedAccessException where a
-        bare Exists() would have quietly said "not there". If no ancestor can be
-        listed, the answer is $null and the entry becomes inventory, not a Finding.
+        The implementation lives in Shared\Inventory.ps1 as
+        Test-OptimizerPathPresent, promoted there by chunk P2-C4 on its second
+        consumer -- the junk detector needs the same answer about directories.
+        This name stays as a one-line delegation so the call sites in this file
+        and their tests are untouched, exactly as Get-OptimizerExclusionMatch was
+        promoted in P2-C2.
     #>
     [CmdletBinding()]
     [OutputType([Nullable[bool]])]
@@ -397,49 +392,7 @@ function Test-StartupTargetPresent {
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path
     )
 
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-
-    try {
-        if (-not [System.IO.Path]::IsPathRooted($Path)) { return $null }
-        if ([System.IO.File]::Exists($Path)) { return [Nullable[bool]] $true }
-    }
-    catch {
-        Write-Verbose "Could not probe startup target '$Path': $($_.Exception.Message)"
-        return $null
-    }
-
-    # Not found. Prove we can actually see the folder it should be in, walking up
-    # until something is listable.
-    $current = $Path
-    for ($depth = 0; $depth -lt $script:StartupTargetProbeDepth; $depth++) {
-        $parent = $null
-        try { $parent = [System.IO.Path]::GetDirectoryName($current) } catch { return $null }
-        if ([string]::IsNullOrWhiteSpace($parent)) { return $null }
-
-        $leaf = $null
-        try { $leaf = [System.IO.Path]::GetFileName($current) } catch { return $null }
-        if ([string]::IsNullOrWhiteSpace($leaf)) { return $null }
-
-        try {
-            # A search pattern rather than a full listing: same permission
-            # semantics, without enumerating a directory that might hold 100k
-            # files. Throws DirectoryNotFoundException when $parent is absent and
-            # UnauthorizedAccessException when it is merely unreadable, and those
-            # two mean opposite things here.
-            $null = [System.IO.Directory]::GetFileSystemEntries($parent, $leaf)
-            return [Nullable[bool]] $false
-        }
-        catch [System.IO.DirectoryNotFoundException] {
-            $current = $parent
-            continue
-        }
-        catch {
-            Write-Verbose "Could not list '$parent' while probing '$Path': $($_.Exception.Message)"
-            return $null
-        }
-    }
-
-    $null
+    Test-OptimizerPathPresent -Path $Path -PathType File
 }
 
 function Get-StartupTargetCompany {

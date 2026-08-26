@@ -664,4 +664,10 @@ Export-ModuleMember -Function @(
     'Get-StartupItemInventory'
     'Find-UnwantedStartupItem'
     'Invoke-StartupItemScan'
+
+    # P2-C4 - JunkFile detector (Detectors/JunkFiles.ps1)
+    'Get-JunkLocationList'
+    'Get-JunkLocationInventory'
+    'Find-JunkFileLocation'
+    'Invoke-JunkFileScan'
 )
