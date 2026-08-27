@@ -26,6 +26,29 @@ BeforeAll {
     $env:WIN11OPTIMIZER_LOGROOT = $script:TestLogRoot
 
     Import-Module $script:ManifestPath -Force -ErrorAction Stop
+
+    # The shared source with every comment span BLANKED IN PLACE, for the
+    # source-scanning assertions below. Necessary here for the same reason it is
+    # necessary in the other two suites: this file's comments name 'C:\Temp' while
+    # explaining the separator-boundary rule, and -match is case-insensitive, so a
+    # prose mention reads exactly like a literal. Offsets are preserved -- only
+    # non-newline characters are replaced -- so a positional pattern still matches.
+    $script:SharedSource = [System.IO.File]::ReadAllText($script:SharedPath)
+    $script:SharedTokens = $null
+    $script:SharedErrors = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseFile($script:SharedPath, [ref] $script:SharedTokens, [ref] $script:SharedErrors)
+
+    $builder = New-Object System.Text.StringBuilder $script:SharedSource
+    foreach ($token in @($script:SharedTokens | Where-Object { $_.Kind -eq 'Comment' })) {
+        $start = $token.Extent.StartOffset
+        $length = $token.Extent.EndOffset - $start
+        for ($i = 0; $i -lt $length; $i++) {
+            if ($builder[$start + $i] -ne "`n" -and $builder[$start + $i] -ne "`r") {
+                $builder[$start + $i] = ' '
+            }
+        }
+    }
+    $script:SharedCode = $builder.ToString()
 }
 
 AfterAll {
@@ -78,6 +101,79 @@ Describe 'Shared inventory is read-only' {
         $source | Should -Not -Match 'Get-CimInstance'
         # The name appears once, in the header comment explaining why it is avoided.
         @([regex]::Matches($source, 'Win32_Product')).Count | Should -BeLessOrEqual 1
+    }
+}
+
+Describe 'The promoted file probe and folder resolver keep the promises they were promoted with' {
+
+    # Chunk P3-C1a. These two positive assertions used to live in
+    # tests\JunkFiles.Tests.ps1, where they were true of code that P3-C1 then moved
+    # into Shared\Inventory.ps1. P3-C1 kept them green by having the two delegations
+    # pass an argument equal to the shared default, flagged that as the wrong shape
+    # in its report section 12, and left the fix for whoever opened the file next.
+    # This is that fix: the assertions follow the code, and the two compatibility
+    # arguments are gone from Detectors\JunkFiles.ps1.
+    #
+    # The negative set travels with them. It was a statement about the file that
+    # opened the handles, and this is now that file.
+
+    It 'parses cleanly' {
+        @($script:SharedErrors).Count | Should -Be 0
+    }
+
+    It 'opens files for READ only, and never for write' {
+        # Test-OptimizerFileInUse is the one place the shared source opens a handle
+        # at all, and read-only is the whole safety claim of the probe -- it runs
+        # over tens of thousands of files on a real scan.
+        $script:SharedCode | Should -Match 'FileAccess\]::Read'
+        $script:SharedCode | Should -Not -Match 'FileAccess\]::Write'
+        $script:SharedCode | Should -Not -Match 'FileAccess\]::ReadWrite'
+        $script:SharedCode | Should -Not -Match 'FileMode\]::Create'
+        $script:SharedCode | Should -Not -Match 'FileMode\]::Truncate'
+        $script:SharedCode | Should -Not -Match 'FileMode\]::Append'
+    }
+
+    It 'enforces read-only access rather than trusting the default' {
+        # The parameter exists so the guarantee is stated at the call site as well
+        # as in the implementation. It is only worth having because it THROWS.
+        InModuleScope Win11Optimizer.Engine {
+            { Test-OptimizerFileInUse -Path 'C:\nothing.txt' -Access ([System.IO.FileAccess]::Write) } |
+                Should -Throw -ExpectedMessage '*read-only probe*'
+        }
+    }
+
+    It 'resolves the protected folders from the shell, not from literals' {
+        $script:SharedCode | Should -Match 'GetFolderPath'
+    }
+
+    It 'hard-codes no absolute path at all' {
+        # The same assertion tests\JunkFiles.Tests.ps1 makes about the detector.
+        # Every folder this file protects resolves through GetFolderPath, an
+        # environment variable or DriveInfo -- never a literal. A drive letter
+        # anywhere in the code would be one.
+        # \b so a registry provider path is not read as a place on disk.
+        $script:SharedCode | Should -Not -Match '\b[A-Za-z]:\\'
+        foreach ($forbidden in 'AppData\Local\Temp', 'My Documents', 'Users\') {
+            $script:SharedCode | Should -Not -Match ([regex]::Escape($forbidden))
+        }
+    }
+
+    It 'still backs the junk detector, which now delegates without arguments' {
+        # The delegation is a delegation again: no -Access, no -ProfileRoot. If a
+        # future edit re-adds one to keep a test matching, this fails and says so.
+        $detector = [System.IO.File]::ReadAllText((Join-Path $script:EngineRoot 'Detectors\JunkFiles.ps1'))
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($detector, [ref]$null, [ref]$null)
+
+        foreach ($name in 'Test-JunkFileInUse', 'Get-JunkKnownUserFolderPath') {
+            $function = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+            }, $true)
+            $function | Should -Not -BeNullOrEmpty -Because "$name is the delegation this assertion is about"
+            $code = ($function.Extent.Text -split '#>', 2)[-1]
+            $code | Should -Not -Match 'FileAccess'
+            $code | Should -Not -Match 'GetFolderPath'
+        }
     }
 }
 

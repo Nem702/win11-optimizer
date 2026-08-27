@@ -182,7 +182,7 @@ Describe 'Dispatcher.ps1 plans removals and performs none' {
         'Set-Service', 'Stop-Service', 'Start-Service', 'New-Service',
         'Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty', 'Set-Item ', 'Clear-Item',
         'Start-Process', 'Invoke-Expression', 'Invoke-Command', 'Invoke-Item', 'Start-Job',
-        'cmd /c', 'cmd.exe', 'powershell.exe', 'rundll32',
+        'cmd /c', 'cmd.exe', 'powershell.exe',
         'Win32_Product', 'Get-WmiObject', 'Get-CimInstance', 'Invoke-CimMethod',
         'File]::Delete', 'Directory]::Delete', 'File]::Move', 'File]::WriteAll',
         'File]::Create', 'File]::AppendAll', 'Set-Acl', 'winget.exe', 'DeleteSubKey', 'DeleteValue'
@@ -197,7 +197,14 @@ Describe 'Dispatcher.ps1 plans removals and performs none' {
         # legitimately appears in a STRING: the dispatcher has to be able to
         # name msiexec in a plan step and winget in a refusal a user reads. So
         # the AST is asked what is actually invoked.
-        foreach ($forbidden in 'winget', 'msiexec', 'msiexec.exe', 'sc', 'sc.exe', 'reg', 'reg.exe', 'dism', 'dism.exe', 'pnputil', 'takeown', 'icacls') {
+        #
+        # 'rundll32' joined that set in chunk P3-C1a and moved out of the grep
+        # list above for the same reason msiexec was never in it. STATE.md Q17
+        # makes a rundll32-shaped uninstall string REFUSED, and the refusal names
+        # the program in a sentence the user reads. The safety claim was never
+        # "the word does not appear" -- it is "the program is never invoked", and
+        # that is what this pass proves.
+        foreach ($forbidden in 'winget', 'msiexec', 'msiexec.exe', 'rundll32', 'rundll32.exe', 'sc', 'sc.exe', 'reg', 'reg.exe', 'dism', 'dism.exe', 'pnputil', 'takeown', 'icacls') {
             $script:InvokedCommand | Should -Not -Contain $forbidden
         }
         foreach ($invoked in $script:InvokedCommand) {

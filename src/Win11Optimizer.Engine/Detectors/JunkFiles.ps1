@@ -18,7 +18,8 @@
          which is a reviewed claim this project ships -- there is NO heuristic
          tier, no "this folder looks like a cache", no size threshold that
          promotes a folder into scope;
-      2. nothing has modified it inside the age window (-MinimumAgeDays);
+      2. nothing has modified it inside the age window (-MinimumAgeDays, or
+         the curated entry own longer window where it declares one);
       3. no other process holds it open, where "cannot tell" counts as open;
       4. it was not reached by following a reparse point;
       5. the location is not marked inventory-only, and is not one of the
@@ -75,6 +76,17 @@ $script:JunkRemovalMethod = 'FileDelete'
 # function here; nothing compares against a literal.
 $script:JunkDefaultMinimumAgeDays = 7
 
+# The upper bound on a curated entry's own age window, and the same number
+# -MinimumAgeDays is range-validated against. An entry may declare a window of its
+# own (Data\junk-locations.json 'minimumAgeDays') where one scan-wide number cannot
+# express what the location is worth: the NVIDIA shader cache is set to 30, because
+# a game played ten days ago should not have its compiled shaders thrown away.
+#
+# The entry's value is a FLOOR under the scan's, never a replacement -- see
+# Get-JunkLocationInventory -- and a value outside 1..this fails the whole list
+# load rather than being ignored.
+$script:JunkMaximumAgeDays = 3650
+
 # The age anchor is the NEWER of LastWriteTimeUtc and CreationTimeUtc. Two
 # timestamps because either alone can lie in the dangerous direction: a file
 # copied into place preserving its write time is new but reads old, and a file
@@ -130,17 +142,18 @@ function Get-JunkKnownUserFolderPath {
         Promoted to Shared\Inventory.ps1 as Get-OptimizerKnownUserFolderPath by
         chunk P3-C1, on its second consumer. This name stays as a delegation.
 
-        The profile root is passed explicitly rather than left to the shared
-        default: it is the fallback base for Downloads, which has no
-        Environment.SpecialFolder member under .NET Framework 4.x, and this file's
-        claim is that every protected folder it knows about comes from the shell
-        and never from a literal.
+        -ProfileRoot is deliberately NOT passed. The shared default is
+        [Environment]::GetFolderPath('UserProfile') -- the same value this file used
+        to spell out -- and P3-C1 only passed it to keep a source-scanning
+        assertion in tests\JunkFiles.Tests.ps1 matching after the promotion. P3-C1a
+        moved that assertion to tests\SharedInventory.Tests.ps1, where the code it
+        is about now lives, so the delegation is a delegation again.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
     param()
 
-    Get-OptimizerKnownUserFolderPath -ProfileRoot ([Environment]::GetFolderPath('UserProfile'))
+    Get-OptimizerKnownUserFolderPath
 }
 
 function Get-JunkProtectedPath {
@@ -357,6 +370,11 @@ function New-JunkLocation {
         [Parameter()] [AllowNull()] [string] $Owner,
         [Parameter()] [bool] $InventoryOnly = $false,
         [Parameter()] [AllowNull()] [string] $InventoryOnlyReason,
+        # The age window this location was ACTUALLY measured against, which is not
+        # always the scan's: an entry may carry a floor of its own. Carried on the
+        # record so the matcher can name the real window in the evidence rather
+        # than repeating the scan-wide one.
+        [Parameter()] [int] $MinimumAgeDays = $script:JunkDefaultMinimumAgeDays,
         [Parameter()] [AllowNull()] [AllowEmptyCollection()] [string[]] $ResolvedPath,
         [Parameter()] [AllowNull()] [AllowEmptyCollection()] [string[]] $DeclaredPath,
         [Parameter(Mandatory)] [ValidateSet('Succeeded', 'Skipped', 'Failed', 'Refused')] [string] $Status,
@@ -409,6 +427,7 @@ function New-JunkLocation {
         Owner                     = $Owner
         InventoryOnly             = $InventoryOnly
         InventoryOnlyReason       = $InventoryOnlyReason
+        MinimumAgeDays            = $MinimumAgeDays
         DeclaredPath              = [string[]] $declared
         ResolvedPath              = [string[]] $resolved
         Status                    = $Status
@@ -450,9 +469,12 @@ function Test-JunkFileInUse {
         Test-StartupTargetPresent was promoted by P2-C4. This name stays as a
         delegation so the call sites in this file and their tests are untouched.
 
-        The read-only access is stated here rather than left to the shared
-        default: it is the whole safety claim of the probe, and this detector is
-        the one that runs it over tens of thousands of files.
+        -Access is deliberately NOT passed. The shared default is
+        [System.IO.FileAccess]::Read and the shared function ENFORCES it, throwing
+        for anything else; P3-C1 only passed it to keep a source-scanning
+        assertion in tests\JunkFiles.Tests.ps1 matching after the promotion. P3-C1a
+        moved that assertion to tests\SharedInventory.Tests.ps1, where the code it
+        is about now lives, so the delegation is a delegation again.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -460,7 +482,7 @@ function Test-JunkFileInUse {
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path
     )
 
-    Test-OptimizerFileInUse -Path $Path -Access ([System.IO.FileAccess]::Read)
+    Test-OptimizerFileInUse -Path $Path
 }
 
 function Get-JunkDirectoryContent {
@@ -679,6 +701,11 @@ function Get-JunkLocationList {
             Downloads out, and it lives here rather than on the list.
           * A path may not contain '..'.
           * Prefetch is forced to inventory-only whatever the entry says.
+          * An entry's optional 'minimumAgeDays' must be a whole number between 1
+            and $script:JunkMaximumAgeDays, and a bad one fails the load. It is
+            REJECTED rather than ignored on purpose: skipping the entry would drop
+            a location from a junk list, and a junk detector that reports one
+            location fewer looks exactly like a slightly cleaner disk.
 
         Note the strict-mode trap the other loaders hit: $entry.PSObject.Properties.Name
         throws on an EMPTY property collection under Set-StrictMode -Version
@@ -774,6 +801,43 @@ function Get-JunkLocationList {
                 throw "Junk-location list '$Path': $where declares 'inventoryOnly' as [$($inventoryProperty.Value.GetType().Name)] '$($inventoryProperty.Value)'. It must be a JSON boolean (true / false), not a string."
             }
             $inventoryOnly = [bool] $inventoryProperty.Value
+        }
+
+        # An optional per-entry age window. ABSENT means "use the scan's
+        # -MinimumAgeDays", which is what every other entry on the shipped list
+        # does and must keep doing.
+        #
+        # A bad value fails the WHOLE load rather than skipping the entry, the
+        # same treatment a bad path gets a few lines below: a malformed curated
+        # entry is a bug in a file this project ships, not a condition of the
+        # machine, and an entry quietly dropped from a junk list is one more
+        # location that reports nothing on a disk that is not clean.
+        #
+        # Not read through Get-OptimizerProperty: the type has to be checked
+        # before any coercion happens, and reading the raw property is the only
+        # way to see what the JSON actually said.
+        $minimumAge = $null
+        $ageProperty = $entry.PSObject.Properties['minimumAgeDays']
+        if ($null -ne $ageProperty -and $null -ne $ageProperty.Value) {
+            $ageValue = $ageProperty.Value
+
+            # A JSON integer arrives as [int] under Windows PowerShell 5.1 and as
+            # [long] under PowerShell 7, so the test is on the integral types
+            # rather than on one of them. A string, a boolean or a fractional
+            # number is rejected by name for the same reason "true" is rejected
+            # above: '30' is silently coercible in PowerShell and would leave an
+            # entry looking configured while nothing had checked it.
+            $isWholeNumber = ($ageValue -is [int]) -or ($ageValue -is [long]) -or ($ageValue -is [int16]) -or ($ageValue -is [byte])
+            if (-not $isWholeNumber) {
+                throw "Junk-location list '$Path': $where declares 'minimumAgeDays' as [$($ageValue.GetType().Name)] '$ageValue'. It must be a whole JSON number (30, not `"30`", not 30.5, not true)."
+            }
+
+            $ageDays = [long] $ageValue
+            if ($ageDays -lt 1 -or $ageDays -gt $script:JunkMaximumAgeDays) {
+                throw "Junk-location list '$Path': $where declares 'minimumAgeDays' as $ageDays. It must be between 1 and $($script:JunkMaximumAgeDays). A location's own window is a floor under the scan's, so 0 or less would say nothing at all, and a number beyond this bound would hold the location back forever without saying so."
+            }
+
+            $minimumAge = [int] $ageDays
         }
 
         $declaredPaths = @()
@@ -874,6 +938,7 @@ function Get-JunkLocationList {
             InventoryOnly       = [bool] $inventoryOnly
             InventoryOnlyReason = $inventoryReason
             IsForcedInventory   = ($null -ne $forcedReason)
+            MinimumAgeDays      = $minimumAge
             Path                = [string[]] $declaredPaths
             ProfileChildPath    = [string[]] $profileChildPaths
             Note                = [string](Get-OptimizerProperty -InputObject $entry -Name 'note')
@@ -1044,6 +1109,11 @@ function Get-JunkLocationInventory {
     .PARAMETER MinimumAgeDays
         Nothing modified inside this many days is eligible for removal. Default 7.
 
+        A curated entry may declare a longer window of its own. Where it does, the
+        window used for that location is the GREATER of the two, and the location
+        record says which one it was (MinimumAgeDays on the record) so the evidence
+        can name the window it actually measured against.
+
     .PARAMETER SkipInUseProbe
         Do not probe candidate files for open handles. The affected locations
         report themselves Skipped, and no file that was not probed can ever reach
@@ -1082,12 +1152,19 @@ function Get-JunkLocationInventory {
     # same bytes twice.
     $seenPath  = New-Object 'System.Collections.Generic.HashSet[string]'
     $protected = @(Get-JunkProtectedPath)
-    $cutoffUtc = [datetime]::UtcNow.AddDays(-$MinimumAgeDays)
 
-    $statistic['ProtectedPathCount'] = $protected.Count
-    $statistic['CutoffUtc']          = $cutoffUtc
-    $statistic['InUseProbeSeconds']  = [double] 0
-    $statistic['InUseProbeCount']    = [long] 0
+    # ONE clock reading for the whole scan. Every cutoff below is derived from it
+    # rather than from a fresh [datetime]::UtcNow, so two locations measured
+    # seconds apart are measured against the same instant and a file cannot land
+    # on opposite sides of the window depending on where it sits in the list.
+    $nowUtc    = [datetime]::UtcNow
+    $cutoffUtc = $nowUtc.AddDays(-$MinimumAgeDays)
+
+    $statistic['ProtectedPathCount']     = $protected.Count
+    $statistic['CutoffUtc']              = $cutoffUtc
+    $statistic['InUseProbeSeconds']      = [double] 0
+    $statistic['InUseProbeCount']        = [long] 0
+    $statistic['AgeWindowOverrideCount'] = [long] 0
 
     foreach ($entry in @($LocationEntry)) {
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1101,6 +1178,25 @@ function Get-JunkLocationInventory {
         $inventoryWhy  = [string](Get-OptimizerProperty -InputObject $entry -Name 'InventoryOnlyReason')
         $declaredPath  = [string[]] @(Get-OptimizerProperty -InputObject $entry -Name 'Path' -Default @())
 
+        # THE EFFECTIVE AGE WINDOW for this location: the GREATER of the scan's
+        # window and the entry's own.
+        #
+        # Greater, not "the entry's if it has one". -MinimumAgeDays 90 is a caller
+        # asking to be MORE conservative than the default, and an entry that then
+        # computed at 30 would be less conservative than what was asked for --
+        # this way round the override can only ever hold more back, never less.
+        #
+        # Not named $minimumAgeDays: PowerShell variable names are case-insensitive,
+        # so that local WOULD BE the [int] $MinimumAgeDays parameter and every
+        # location after the first would inherit the previous one's window.
+        $entryAgeDays  = Get-OptimizerProperty -InputObject $entry -Name 'MinimumAgeDays'
+        $effectiveDays = [int] $MinimumAgeDays
+        if ($null -ne $entryAgeDays -and ([int] $entryAgeDays) -gt $effectiveDays) {
+            $effectiveDays = [int] $entryAgeDays
+            $statistic['AgeWindowOverrideCount'] = [long] $statistic['AgeWindowOverrideCount'] + 1
+        }
+        $entryCutoffUtc = $nowUtc.AddDays(-$effectiveDays)
+
         $common = @{
             Id                  = $id
             DisplayName         = $displayName
@@ -1109,6 +1205,7 @@ function Get-JunkLocationInventory {
             Owner               = $owner
             InventoryOnly       = $inventoryOnly
             InventoryOnlyReason = $inventoryWhy
+            MinimumAgeDays      = $effectiveDays
             DeclaredPath        = $declaredPath
         }
 
@@ -1192,7 +1289,7 @@ function Get-JunkLocationInventory {
 
             $content = $null
             try {
-                $content = Get-JunkDirectoryContent -Path $path -CutoffUtc $cutoffUtc -SeenPath $seenPath -LocationId $id -CollectFiles:(-not $inventoryOnly)
+                $content = Get-JunkDirectoryContent -Path $path -CutoffUtc $entryCutoffUtc -SeenPath $seenPath -LocationId $id -CollectFiles:(-not $inventoryOnly)
             }
             catch {
                 $inner = Get-OptimizerInnerException -Exception $_.Exception
@@ -1337,8 +1434,8 @@ function Find-JunkFileLocation {
 
         A location becomes a Finding when ALL of these hold:
 
-          * it is not inventory-only (the Recycle Bin, Prefetch and the shader
-            cache are reported with their sizes and never flagged);
+          * it is not inventory-only (the Recycle Bin, Prefetch and the
+            servicing logs are reported with their sizes and never flagged);
           * it was assessed -- read, and its files checked for open handles;
           * at least one file passed every gate.
 
@@ -1356,8 +1453,14 @@ function Find-JunkFileLocation {
         Location records from Get-JunkLocationInventory.
 
     .PARAMETER MinimumAgeDays
-        The age window the locations were measured against; used only to say so in
-        the evidence.
+        The SCAN-WIDE age window the locations were measured against; used to say
+        so in the evidence, and as the fallback for a record that does not carry a
+        window of its own.
+
+        A location record measured by Get-JunkLocationInventory carries the window
+        it was ACTUALLY measured against, which is the greater of this value and
+        the curated entry own floor. That is the number the evidence quotes, and
+        where the two differ the evidence says so in a line of its own.
 
     .EXAMPLE
         Find-JunkFileLocation -Location $inventory.Locations -MinimumAgeDays 7
@@ -1398,6 +1501,15 @@ function Find-JunkFileLocation {
         $totalBytes    = [long](Get-OptimizerProperty -InputObject $record -Name 'TotalBytes' -Default 0)
         $resolvedPath  = [string[]] @(Get-OptimizerProperty -InputObject $record -Name 'ResolvedPath' -Default @())
 
+        # The window this location was ACTUALLY measured against, which is not
+        # always the scan's: a curated entry may carry a floor of its own. A row
+        # computed at 30 days whose evidence says 7 is a lie in the user's own
+        # words, and the evidence being true is this project's whole pitch. A
+        # record with no such field -- one built by hand, or read back from an
+        # older run -- falls back to the scan's window, which is what it meant.
+        $windowDays = [int](Get-OptimizerProperty -InputObject $record -Name 'MinimumAgeDays' -Default $MinimumAgeDays)
+        if ($windowDays -lt 1) { $windowDays = $MinimumAgeDays }
+
         $evidence = New-Object System.Collections.Generic.List[string]
 
         # The headline line. Phrased as what is on disk, never as space that will
@@ -1408,9 +1520,13 @@ function Find-JunkFileLocation {
             $displayName,
             (Format-JunkCount -Count $eligibleCount),
             (Format-JunkSize -Bytes $eligibleBytes),
-            $MinimumAgeDays,
+            $windowDays,
             (Format-JunkCount -Count $fileCount),
             (Format-JunkSize -Bytes $totalBytes)))
+
+        if ($windowDays -ne $MinimumAgeDays) {
+            $evidence.Add("Age window: this location was measured against its own $windowDays-day window rather than the $MinimumAgeDays days the rest of this scan used, because what is in it is worth keeping for longer.")
+        }
 
         if ($resolvedPath.Count -gt 0) {
             $evidence.Add("Location: $($resolvedPath -join '; ')")
@@ -1429,7 +1545,7 @@ function Find-JunkFileLocation {
         $duplicates  = [long](Get-OptimizerProperty -InputObject $record -Name 'DuplicatePathCount' -Default 0)
 
         $heldBack = New-Object System.Collections.Generic.List[string]
-        if ($ageHeld -gt 0) { $heldBack.Add("$(Format-JunkCount -Count $ageHeld) modified in the last $MinimumAgeDays days ($(Format-JunkSize -Bytes $ageBytes))") }
+        if ($ageHeld -gt 0) { $heldBack.Add("$(Format-JunkCount -Count $ageHeld) modified in the last $windowDays days ($(Format-JunkSize -Bytes $ageBytes))") }
         if ($inUse -gt 0) { $heldBack.Add("$(Format-JunkCount -Count $inUse) open in another process") }
         if ($undetermined -gt 0) { $heldBack.Add("$(Format-JunkCount -Count $undetermined) that could not be checked, which counts as in use") }
         if ($reparse -gt 0) { $heldBack.Add("$(Format-JunkCount -Count $reparse) junction$(if ($reparse -eq 1) { '' } else { 's' }) or link$(if ($reparse -eq 1) { '' } else { 's' }), which this tool never follows") }
@@ -1469,7 +1585,10 @@ function Find-JunkFileLocation {
         $finding | Add-Member -MemberType NoteProperty -Name 'EligibleBytes'     -Value $eligibleBytes
         $finding | Add-Member -MemberType NoteProperty -Name 'EligibleFile'      -Value ([psobject[]] @(Get-OptimizerProperty -InputObject $record -Name 'EligibleFile' -Default @()))
         $finding | Add-Member -MemberType NoteProperty -Name 'IsSizeFloor'       -Value ([bool](Get-OptimizerProperty -InputObject $record -Name 'IsSizeFloor' -Default $false))
-        $finding | Add-Member -MemberType NoteProperty -Name 'MinimumAgeDays'    -Value $MinimumAgeDays
+        # The window this row was measured against, not the scan's -- the same
+        # number the evidence line above quotes, so a consumer reading the field
+        # and a user reading the sentence never disagree.
+        $finding | Add-Member -MemberType NoteProperty -Name 'MinimumAgeDays'    -Value $windowDays
 
         $finding
     }
@@ -1512,6 +1631,11 @@ function Invoke-JunkFileScan {
     .PARAMETER MinimumAgeDays
         Nothing modified inside this many days is eligible. Default 7 -- the
         window Windows' own Disk Cleanup applies to the temp folder.
+
+        A curated location may declare a longer window of its own, in which case
+        that location is measured against the greater of the two. Raising this
+        value therefore always holds more back and never less; AgeWindowOverrideCount
+        on the result says how many locations used a window of their own.
 
     .PARAMETER SkipInUseProbe
         Measure sizes but do not check files for open handles. Affected locations
@@ -1650,6 +1774,7 @@ function Invoke-JunkFileScan {
             DuplicatePathCount   = $duplicateTotal
             InventoryOnlyCount   = $inventoryOnlyCount
             AbsentLocationCount  = $absentCount
+            AgeWindowOverrideCount = [long] $inventory.Statistic['AgeWindowOverrideCount']
             ReadStatistic        = $inventory.Statistic
         })
 

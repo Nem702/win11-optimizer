@@ -236,8 +236,14 @@ Describe 'JunkFiles.ps1 is a detector, not a cleaner' {
     }
 
     It 'opens files for READ only, and never for write' {
-        # The in-use probe is the one place this file opens a handle at all.
-        $script:SourceCode | Should -Match 'FileAccess\]::Read'
+        # The in-use probe was the one place this file opened a handle at all, and
+        # chunk P3-C1 promoted it to Shared\Inventory.ps1 as
+        # Test-OptimizerFileInUse. The POSITIVE half of this assertion --
+        # Should -Match 'FileAccess]::Read' -- moved to
+        # tests\SharedInventory.Tests.ps1 with it, and P3-C1a then deleted the
+        # -Access argument that was keeping it matching here. The negatives stay:
+        # they are statements about THIS file and they must keep holding whether
+        # or not it opens anything.
         $script:SourceCode | Should -Not -Match 'FileAccess\]::Write'
         $script:SourceCode | Should -Not -Match 'FileAccess\]::ReadWrite'
         $script:SourceCode | Should -Not -Match 'FileMode\]::Create'
@@ -283,7 +289,15 @@ Describe 'JunkFiles.ps1 is a detector, not a cleaner' {
     }
 
     It 'resolves the protected folders from the shell, not from literals' {
-        $script:SourceCode | Should -Match 'GetFolderPath'
+        # The known-user-folder half moved to Shared\Inventory.ps1 as
+        # Get-OptimizerKnownUserFolderPath (P3-C1), and its
+        # Should -Match 'GetFolderPath' assertion moved to
+        # tests\SharedInventory.Tests.ps1 with it (P3-C1a).
+        #
+        # SystemRoot stays here: the WinSxS protected-path entry did NOT move --
+        # Get-JunkProtectedPath returns the shared list plus that one entry, and a
+        # test below pins the difference at exactly one -- so this file still
+        # resolves it, and still resolves it from the environment.
         $script:SourceCode | Should -Match "GetEnvironmentVariable\('SystemRoot'\)"
     }
 

@@ -368,12 +368,17 @@ which looks exactly like a clean disk.
   "reason": "Why this is junk.",  // required — copied into the Finding's Evidence
   "provenance": "measured",       // required — "measured" or "published"
   "inventoryOnly": true,          // optional, JSON boolean. Absent = false
+  "minimumAgeDays": 30,           // optional, whole number 1..3650 — see below
   "resolver": "recycleBin",       // optional — "path" (default) or "recycleBin"
   "paths": [ "%TEMP%" ],          // required unless a resolver is declared
   "profileChildPath": [ "Cache\\Cache_Data" ],  // optional — see below
   "note": "…"                     // optional, for maintainers
 }
 ```
+
+`schemaVersion` is **2** as of chunk P3-C1a, which added `minimumAgeDays`. Entries
+written against version 1 load unchanged: the field is optional and absent means
+"use the scan's `-MinimumAgeDays`", which is what every other entry does.
 
 **The unit of judgement is the location, not the file.** One Finding per entry,
 never one per file: `%TEMP%` holds ~2,000 files on the development machine and a
@@ -410,6 +415,34 @@ extension data live in other folders inside the same profile and are never named
 code because the Recycle Bin is one folder per fixed drive named after the current
 user's SID and no environment variable spells it.
 
+### `minimumAgeDays` — one location's own age window
+
+Absent on almost every entry, and absent means **"use the scan's
+`-MinimumAgeDays`"**. Where it is present it is a **floor under** the scan's window,
+never a replacement: the window a location is actually measured against is the
+**greater** of the two.
+
+That direction is the whole point. `-MinimumAgeDays 90` is a caller asking to be
+*more* conservative than the default, and an entry that then computed at 30 would
+give them less than they asked for. Raising the scan's window can therefore only
+ever hold more back.
+
+One entry ships with it. `nvidia-shader-cache` is set to **30**, because a game
+played ten days ago should not have its compiled shaders thrown away and one
+scan-wide number cannot express that. On the development machine the override is
+free — the 7-30 day bucket is empty, so 7 and 30 days offer the identical set —
+which is exactly why it was added before meeting a machine where it costs
+something.
+
+A value that is not a whole number between 1 and 3650 **fails the whole list
+load**, by name. Not the entry: a malformed curated entry is a bug in a file this
+project ships, not a condition of the machine, and a junk list one location shorter
+looks exactly like a slightly cleaner disk.
+
+Where the two windows differ, the Finding's evidence names the window it actually
+used and says so in a line of its own. A row computed at 30 days whose evidence
+says 7 is a lie in the user's own words.
+
 ### `inventoryOnly` — sized and reported, never flagged
 
 Three entries ship with it, for three different reasons:
@@ -418,11 +451,19 @@ Three entries ship with it, for three different reasons:
 | --- | --- |
 | `recycle-bin` | it is the user's own undo buffer; everything in it was put there by a person |
 | `prefetch` | another detector reads it as evidence — **forced in code**, not by this flag |
-| `nvidia-shader-cache` | 34.8 GB here, driver-managed, and this project has not measured what rebuilding it costs |
+| `servicing-logs` | the CBS/DISM record that troubleshooting a failed Windows Update starts from; the whole elevated prize was one file, 1.78 MiB |
 
-Reporting them matters as much as not flagging them: "Recycle Bin: 2.3 MB, not
-flagged" is a number the user wants, and a silently absent Recycle Bin is the
-failure mode this project is built against.
+`nvidia-shader-cache` **was** on this list and is not any more (P3-C1a). It was
+measured — 872 files, 34.72 GiB, 617 of them older than 90 days, with NVIDIA's own
+shader-cache size cap set and simply not enforced — and the cost of emptying it is
+statable without a benchmark: the first launch of each game recompiles its shaders,
+so expect stuttering for that one session. It stays `requiresConsent` / "Review
+needed" like every row in this category, and it carries the `minimumAgeDays: 30`
+above.
+
+Reporting an inventory-only entry matters as much as not flagging it: "Recycle Bin:
+2.3 MB, not flagged" is a number the user wants, and a silently absent Recycle Bin
+is the failure mode this project is built against.
 
 ### What must never go on this list
 

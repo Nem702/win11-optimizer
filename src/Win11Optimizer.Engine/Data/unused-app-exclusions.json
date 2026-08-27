@@ -137,6 +137,9 @@
       "class": "driver-utility",
       "reason": "These update firmware and drivers. Treating one as bloat because nobody opens it is how a machine loses its fan curve or its BIOS-update path. Named in Data/README.md as software that must never be flagged.",
       "match": {
+        "registryPublisher": [
+          "Micro-Star*"
+        ],
         "registryDisplayName": [
           "MSI Center*",
           "Lenovo Vantage*",
@@ -150,7 +153,6 @@
           "MyASUS*",
           "Alienware Update*",
           "Acer Care Center*",
-          "Micro-Star*",
           "Mystic_Light*"
         ],
         "appxPackageName": [
@@ -164,7 +166,7 @@
           "AD2F1837.HPPCHardwareDiagnostics*"
         ]
       },
-      "note": "9426MICRO-STARINTERNATION.MSICenter was measured on this project's hardware and is why the Store half of this entry exists: MSI Center ships as an Appx package, so the registryDisplayName patterns alone missed it and it came out as a candidate Finding. The Lenovo/Dell/HP/ASUS Store identifiers come from published lists and are unverified here. 'Mystic_Light*' is the display name of MSI's RGB service, which does not begin with 'MSI Center' and so missed every other rule here (measured, P2-C2). 'Micro-Star*' matches no display name on this project's hardware -- the MSI services carry it as their SIGNER, not their display name -- and is kept as the cheap half of that pair; see the P2-C2a report."
+      "note": "9426MICRO-STARINTERNATION.MSICenter was measured on this project's hardware and is why the Store half of this entry exists: MSI Center ships as an Appx package, so the registryDisplayName patterns alone missed it and it came out as a candidate Finding. The Lenovo/Dell/HP/ASUS Store identifiers come from published lists and are unverified here. 'Mystic_Light*' is the display name of MSI's RGB service, which does not begin with 'MSI Center' and so missed every other rule here (measured, P2-C2). 'Micro-Star*' is a registryPublisher pattern and not a display-name one, moved there by P3-C1a: the MSI services on this project's hardware (MSI_Case_Service, LightKeeperService, Mystic_Light_Service) carry Micro-Star as their SIGNER and their CompanyName, never as their display name, so as a display-name pattern it matched nothing at all. P2-C2a's second-chance publisher resolver is what made the publisher field reachable for a service. Reachable in this direction only because of the polarity of THIS list: registryPublisher stands alone here (an OR with the other three fields) where on the OEM whitelist it is an AND-guard, so a vendor-wide rule here can only ever add an exclusion."
     },
     {
       "id": "peripheral-control-software",

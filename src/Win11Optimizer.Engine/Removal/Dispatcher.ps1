@@ -166,6 +166,21 @@ $script:RemovalExecutableExtension = @('.exe', '.com', '.bat', '.cmd', '.msi')
 $script:RemovalMsiExecName = 'msiexec'
 $script:RemovalGuidPattern = '\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}'
 
+# The one uninstall string this project refuses outright (docs\STATE.md Q17).
+#
+# Five NVIDIA keys on the development machine are of the form
+#
+#     "...\RunDll32.EXE" "...\NVI2.DLL",UninstallPackage Display.Driver
+#
+# and the parser produces a correct argv for it. rundll32 is the one program that
+# does not read argv: it parses GetCommandLine() itself and splits the module from
+# the entry point on the comma, so an argument array re-quoted by whoever launches
+# the process may not reproduce the string it was built from. The plan would
+# therefore LOOK right and probably not be, which is the worst state for a plan to
+# be in, so the shape is unsupported rather than guessed at.
+$script:RemovalRunDll32Name = 'rundll32'
+$script:RemovalEntryPointExtension = @('.dll', '.cpl', '.ocx')
+
 # How many file paths the preview quotes for a FileDeleteSet step. The set can be
 # five figures; the preview shows counts, the location and a sample, never the
 # list.
@@ -775,6 +790,65 @@ function Test-RemovalIsMsiExec {
     [string]::Equals($leaf, $script:RemovalMsiExecName, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-RemovalIsRunDll32 {
+    # Is this executable Windows' rundll32 launcher? Matched on the file name with
+    # the extension dropped rather than on 'rundll32.exe' literally, so a string
+    # that names it without one -- or as RunDll32.COM -- is caught too. Same shape
+    # as Test-RemovalIsMsiExec, and case-insensitive for the same reason: the real
+    # keys on this machine write 'RunDll32.EXE'.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Executable
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Executable)) { return $false }
+    $leaf = $null
+    try { $leaf = [System.IO.Path]::GetFileNameWithoutExtension($Executable) } catch { return $false }
+    [string]::Equals($leaf, $script:RemovalRunDll32Name, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-RemovalHasEntryPointArgument {
+    <#
+        Does this argument array carry a '<module path>,<entry point>' token?
+
+        The SECOND of the two signals the rundll32 refusal needs. Either alone can
+        be dodged -- a string could name rundll32 and pass an ordinary switch, or
+        name something else entirely and still use a comma -- so the refusal wants
+        both, and this half is what says the comma is load-bearing rather than
+        incidental.
+
+        Shape: a comma at least one character in, something after it, and a module
+        extension on the left of it. Nothing here parses the entry point; it only
+        has to be non-empty, because what makes the string unusable is the comma
+        being significant to the receiving program and to nothing else.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [string[]] $Argument
+    )
+
+    if ($null -eq $Argument) { return $false }
+
+    foreach ($token in @($Argument)) {
+        if ([string]::IsNullOrWhiteSpace($token)) { continue }
+
+        $comma = $token.IndexOf(',')
+        if ($comma -lt 1) { continue }
+        if ($comma -ge ($token.Length - 1)) { continue }
+
+        $module = $token.Substring(0, $comma)
+        $extension = $null
+        try { $extension = [System.IO.Path]::GetExtension($module) } catch { $extension = $null }
+        if ([string]::IsNullOrWhiteSpace($extension)) { continue }
+
+        if ($script:RemovalEntryPointExtension -contains $extension.ToLowerInvariant()) { return $true }
+    }
+
+    $false
+}
+
 function ConvertTo-RemovalMsiExecCommand {
     <#
         The ONE rewrite this project does, because MsiExec's uninstall form is
@@ -1053,7 +1127,11 @@ function Add-RemovalUninstallStringRoute {
             UninstallString exists it is used as written and the step is marked
             RequiresInteraction. No invented /S: a guessed silent switch that a
             given installer reads as something else is a removal nobody can
-            predict.
+            predict;
+          * a rundll32 string with a comma-joined entry point is REFUSED. It is
+            the one shape this parser gets right as argv and still cannot deliver,
+            because rundll32 re-reads the command line for itself. See
+            Test-RemovalIsRunDll32.
     #>
     [CmdletBinding()]
     param(
@@ -1121,6 +1199,19 @@ function Add-RemovalUninstallStringRoute {
         $Builder.CurrentState = $script:RemovalStatePresent
         $why = $(if ($null -ne $parsed -and $parsed.Note) { " $($parsed.Note)" } else { '' })
         Deny-RemovalPlan -Builder $Builder -Reason "The uninstall command recorded for '$keyPath' could not be read as a program plus arguments, and this tool never hands an uninstall string to a shell.$why"
+        return
+    }
+
+    # FAILS CLOSED ON rundll32 (docs\STATE.md Q17). Both signals, because either
+    # alone can be dodged: the program is rundll32, AND an argument joins a module
+    # to an entry point with a comma. rundll32 reads its own command line instead
+    # of the argument array every other program here receives, so this is the one
+    # shape whose plan would look correct and probably not be -- and a plan nobody
+    # can predict from is worse than no plan at all.
+    if ((Test-RemovalIsRunDll32 -Executable $parsed.Executable) -and
+        (Test-RemovalHasEntryPointArgument -Argument $parsed.Argument)) {
+        $Builder.CurrentState = $script:RemovalStatePresent
+        Deny-RemovalPlan -Builder $Builder -Reason "The uninstaller registered for '$keyPath' runs Windows' rundll32 helper with a library and an entry point joined by a comma ('$commandString'), and rundll32 reads the original command line for itself rather than the separate arguments this tool would hand it -- so this tool cannot rebuild that command safely and will not try. Uninstall this one from Windows' own list instead: Settings, Apps, Installed apps."
         return
     }
 
@@ -1323,6 +1414,62 @@ function Get-RemovalStartupApprovedPlanData {
     }
 }
 
+function ConvertTo-RemovalStartupExclusionCandidate {
+    <#
+        Presents a StartupItem Finding in the shape Get-OptimizerExclusionMatch
+        reads, so the startup route can be gated against the same curated
+        exclusion list the service route uses rather than against a second vendor
+        list written here.
+
+        The record is built through Detectors\StartupItems.ps1's own
+        ConvertTo-StartupExclusionCandidate, not beside it: the field mapping that
+        decides which curated rules can reach a startup entry is P2-C2a's, stated
+        once.
+
+        NAME is the startup entry's own name -- the Run VALUE name, or the leaf
+        file name of a Startup-folder shortcut -- because that is what the startup
+        detector puts there. DISPLAYNAME is the Finding's, which is what a curated
+        registryDisplayName rule matches.
+
+        PUBLISHER IS DELIBERATELY EMPTY, and the gate is weaker for it in a way
+        worth stating rather than hiding. The service route resolves a publisher
+        from the service key's own ImagePath, additively; there is no equivalent
+        here that is cheap and certain, and P2-C2a's rule is that for an entry
+        whose binary may be gone only registryDisplayName rules can ever match
+        anyway -- the binary carrying the publisher is gone by definition. So this
+        gate is a display-name gate, on purpose. An absent publisher means the
+        publisher rules do not match; it never means "not that vendor".
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [psobject] $Builder
+    )
+
+    $identifier = [string] $Builder.FindingId
+    $name = $identifier
+
+    if ($Builder.RemovalMethod -eq 'RegistryRunKey') {
+        # '<run key path>::<value name>'. A malformed identifier keeps the whole
+        # string as the name, which matches nothing -- and is refused a few lines
+        # later for being malformed anyway.
+        $separator = $identifier.IndexOf('::')
+        if ($separator -ge 0) { $name = $identifier.Substring($separator + 2) }
+    }
+    else {
+        $leaf = $null
+        try { $leaf = [System.IO.Path]::GetFileName($identifier) } catch { $leaf = $null }
+        if (-not [string]::IsNullOrWhiteSpace($leaf)) { $name = $leaf }
+    }
+
+    $displayName = [string] $Builder.DisplayName
+    if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = $name }
+
+    ConvertTo-StartupExclusionCandidate -Publisher '' -StartupItem ([pscustomobject]@{
+        Name        = $name
+        DisplayName = $displayName
+    })
+}
+
 function Add-RemovalStartupApprovedRoute {
     <#
         Both StartupItem routes -- a Run value and a Startup-folder shortcut --
@@ -1334,8 +1481,41 @@ function Add-RemovalStartupApprovedRoute {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [psobject] $Builder,
-        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ProtectedPath
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ProtectedPath,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ExclusionEntry
     )
+
+    # THE LAST GATE for startup entries: the 'security' exclusion class, whatever
+    # the Finding says (docs\STATE.md Q15). The service route has had this since
+    # P3-C1; this route did not, so handed a StartupItem finding naming an
+    # antivirus product it would have planned a disable. No detector produces one
+    # -- and this gate exists precisely so that nothing has to rely on that.
+    #
+    # FIRST, before the store is even resolved. A finding for security software
+    # must be refused FOR BEING SECURITY SOFTWARE: refusing it three checks later
+    # for a malformed run key would be the same outcome reached by luck, and the
+    # sentence the user reads would say the wrong thing.
+    #
+    # 'security' ONLY, from the same $script:StartupOrphanProofServiceClass P2-C2a
+    # pinned. Not 'driver' and not 'driver-utility': those are the detector's
+    # business, and it has a measured orphan exemption for them that took a whole
+    # chunk to get right. A gate here that refused every protected class would
+    # silently undo it.
+    #
+    # And no orphan exemption, ever. 'security' beats a proved orphan
+    # unconditionally, because the orphan proof is the unreliable part --
+    # anti-tamper minifilters hide binaries from enumeration -- and the cost of
+    # getting it wrong is offering to switch off live antivirus.
+    $exclusion = Get-OptimizerExclusionMatch -ExclusionEntry $ExclusionEntry `
+        -InstalledApp (ConvertTo-RemovalStartupExclusionCandidate -Builder $Builder)
+
+    if ($null -ne $exclusion) {
+        $class = [string](Get-OptimizerProperty -InputObject $exclusion -Name 'Class')
+        if ($script:StartupOrphanProofServiceClass -contains $class) {
+            Deny-RemovalPlan -Builder $Builder -Reason "'$($Builder.DisplayName)' matches the '$class' class on the shared exclusion list (entry '$([string](Get-OptimizerProperty -InputObject $exclusion -Name 'Id'))'). This tool never switches off a startup entry belonging to security software, whatever produced the finding: the evidence that would say it is safe to touch is the same evidence tamper protection is designed to hide."
+            return
+        }
+    }
 
     $data = Get-RemovalStartupApprovedPlanData -Builder $Builder
     if ($data.Refusal) {
@@ -2253,9 +2433,10 @@ function Get-RemovalPlan {
         try { $exclusionEntry = [psobject[]] @(Get-UnusedAppExclusionList) }
         catch {
             # A list that will not load must never read as "nothing is excluded".
-            # It is not fatal here -- the other six routes do not use it -- but the
-            # service route refuses outright rather than proceeding unprotected.
-            Write-Warning "The shared exclusion list could not be loaded: $($_.Exception.Message). Service findings will be refused rather than planned."
+            # It is not fatal here -- the other five routes do not use it -- but
+            # the two routes that CAN reach security software refuse outright
+            # rather than proceeding unprotected.
+            Write-Warning "The shared exclusion list could not be loaded: $($_.Exception.Message). Service and startup findings will be refused rather than planned."
             $exclusionEntry = $null
         }
     }
@@ -2300,7 +2481,14 @@ function Get-RemovalPlan {
                 $script:RemovalRouteAppx              { Add-RemovalAppxRoute -Builder $builder -Cache $appxCache }
                 $script:RemovalRouteUninstallString   { Add-RemovalUninstallStringRoute -Builder $builder }
                 $script:RemovalRoutePackageManagement { Add-RemovalPackageManagementRoute -Builder $builder }
-                $script:RemovalRouteStartupApproved   { Add-RemovalStartupApprovedRoute -Builder $builder -ProtectedPath $protectedPath }
+                $script:RemovalRouteStartupApproved   {
+                    if ($null -eq $exclusionEntry) {
+                        Deny-RemovalPlan -Builder $builder -Reason 'The shared exclusion list could not be loaded, so this tool cannot tell whether this startup entry belongs to security software. A startup entry is never planned for without that check.'
+                    }
+                    else {
+                        Add-RemovalStartupApprovedRoute -Builder $builder -ProtectedPath $protectedPath -ExclusionEntry $exclusionEntry
+                    }
+                }
                 $script:RemovalRouteScheduledTask     { Add-RemovalScheduledTaskRoute -Builder $builder }
                 $script:RemovalRouteServiceStartup    {
                     if ($null -eq $exclusionEntry) {
