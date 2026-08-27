@@ -11,6 +11,11 @@
       * the per-source status record             (New-ScanSource)
       * the scan-result wrapper                  (New-ScanResult)
       * the tri-state path existence probe       (Test-OptimizerPathPresent)
+      * the in-use file probe                    (Test-OptimizerFileInUse)
+      * path comparison and containment          (ConvertTo-OptimizerComparablePath,
+                                                  Test-OptimizerPathWithin)
+      * the protected-path list and its check    (Get-OptimizerProtectedPath,
+                                                  Get-OptimizerProtectedPathConflict)
 
     READ-ONLY. Nothing in this file writes, uninstalls or deletes anything.
     Win32_Product / WMI is deliberately never used: it triggers an MSI
@@ -59,6 +64,13 @@ $script:ScanSourceStatuses = @('Succeeded', 'Skipped', 'Failed', 'Refused')
 # The statuses that count as incompleteness. Everything else in the set above is
 # either a success or a permanent, deliberate omission.
 $script:ScanSourceIncompleteStatuses = @('Skipped', 'Failed')
+
+# The three in-use verdicts returned by Test-OptimizerFileInUse. 'Undetermined'
+# exists because a probe that cannot answer must not be read as "free": it is
+# counted separately and every caller treats it as in use.
+$script:OptimizerInUseFree         = 'Free'
+$script:OptimizerInUseHeld         = 'InUse'
+$script:OptimizerInUseUndetermined = 'Undetermined'
 
 # Minimum literal prefix in front of a trailing '*'. See Data\README.md.
 $script:MinimumPatternPrefix = 6
@@ -718,6 +730,321 @@ function Get-OptimizerInnerException {
         $current = $current.InnerException
     }
     $current
+}
+
+#endregion
+
+#region The in-use probe
+
+function Test-OptimizerFileInUse {
+    <#
+        Is another process holding this file open? Returns one of Free / InUse /
+        Undetermined, and every caller treats the last two identically.
+
+        Promoted out of Detectors\JunkFiles.ps1 by chunk P3-C1 on its second
+        consumer -- the removal dispatcher re-checks the gate at plan time,
+        because the scan's answer has a shelf life of minutes -- the same way
+        Test-OptimizerPathPresent was promoted here by P2-C4. The old name stays
+        in JunkFiles.ps1 as a delegation, so P2-C4's call sites and tests are
+        untouched.
+
+        Probed by opening the file for READ with FileShare None: if anyone else
+        has it open at all, the open fails with a sharing violation. Nothing is
+        written and the handle is closed immediately.
+
+        "Cannot tell" is never "free". A denied open, or a path too long for the
+        API, means the answer is unknown, and an unknown file stays out of the
+        deletable set.
+
+        NOTE ON A VANISHED FILE. FileNotFoundException derives from IOException,
+        so a file that disappeared between enumeration and probe answers 'InUse'
+        here. That is the right default for a detector, and it is the WRONG answer
+        for the dispatcher, which has to tell "gone" (a success) from "held" (a
+        refusal). The dispatcher therefore proves presence with
+        Test-OptimizerPathPresent FIRST and only asks this question about a file
+        it has just proved is there. Do not "fix" that by widening this function:
+        an Exists() check inside it would answer $false for a path the caller may
+        not look at, which is the trap REVIEW.md records twice.
+
+        Cost, measured on the development machine during P2-C4: 0.034 ms per file
+        (1,964 files in %TEMP% in 0.067 s), so the gate runs over every candidate
+        rather than a sample.
+
+        -Access is a parameter rather than a constant so the guarantee this probe
+        makes -- it never asks for more than read -- is stated at the call site as
+        well as in the implementation, and is enforced here. It also keeps P2-C4's
+        source-scanning assertion about JunkFiles.ps1 true after the promotion;
+        see the report for chunk P3-C1.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path,
+        [Parameter()] [System.IO.FileAccess] $Access = ([System.IO.FileAccess]::Read)
+    )
+
+    if ($Access -ne [System.IO.FileAccess]::Read) {
+        throw "Test-OptimizerFileInUse is a read-only probe; -Access '$Access' would open the file for writing."
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $script:OptimizerInUseUndetermined }
+
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, $Access, [System.IO.FileShare]::None)
+        return $script:OptimizerInUseFree
+    }
+    catch [System.IO.IOException] {
+        # A sharing violation is the answer this gate exists for: somebody else
+        # has it open. See the note above about FileNotFoundException.
+        return $script:OptimizerInUseHeld
+    }
+    catch {
+        Write-Verbose "Could not determine whether '$Path' is in use: $($_.Exception.Message)"
+        return $script:OptimizerInUseUndetermined
+    }
+    finally {
+        if ($null -ne $stream) {
+            try { $stream.Dispose() } catch { }
+        }
+    }
+}
+
+#endregion
+
+#region Path comparison and the protected-path gate
+
+function ConvertTo-OptimizerComparablePath {
+    # Normalised form for path comparison: full path, no trailing separator
+    # (except on a drive root, where the separator is part of the path), used as
+    # the dedupe key and by the containment test. Returns $null for anything that
+    # will not normalise, and a caller must treat that as "do not touch this".
+    #
+    # Promoted out of Detectors\JunkFiles.ps1 by chunk P3-C1 with the rest of the
+    # protected-path cluster.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+
+    $full = $null
+    try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return $null }
+    if ([string]::IsNullOrWhiteSpace($full)) { return $null }
+
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    if ($full.Length -gt 3) { $full = $full.TrimEnd($separator) }
+    $full
+}
+
+function Test-OptimizerPathWithin {
+    <#
+        Is $Path the same as, or underneath, $Container? Ordinal case-insensitive
+        on normalised paths, with an explicit separator boundary so 'C:\Temp2' is
+        not treated as being inside 'C:\Temp'.
+
+        Deliberately a string comparison and not a resolution: it runs BEFORE
+        anything is enumerated or acted on, on paths that may not exist, and it is
+        the gate that keeps this project out of the user's own folders.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Container
+    )
+
+    $left  = ConvertTo-OptimizerComparablePath -Path $Path
+    $right = ConvertTo-OptimizerComparablePath -Path $Container
+    if ([string]::IsNullOrWhiteSpace($left) -or [string]::IsNullOrWhiteSpace($right)) { return $false }
+
+    if ([string]::Equals($left, $right, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+
+    $separator = [string][System.IO.Path]::DirectorySeparatorChar
+    $prefix = $right
+    if (-not $prefix.EndsWith($separator)) { $prefix += $separator }
+
+    $left.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-OptimizerFixedDriveRoot {
+    # Fixed-drive roots, for the "a whole drive is never a target" rule and for
+    # the junk detector's Recycle Bin resolver. Removable and network drives are
+    # out: this tool does not clean a USB stick it happens to find.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    $roots = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
+            try {
+                if ($drive.DriveType -ne [System.IO.DriveType]::Fixed) { continue }
+                if (-not $drive.IsReady) { continue }
+                $roots.Add($drive.RootDirectory.FullName)
+            }
+            catch { continue }
+        }
+    }
+    catch {
+        Write-Verbose "Could not enumerate drives: $($_.Exception.Message)"
+    }
+
+    [string[]] $roots.ToArray()
+}
+
+function Get-OptimizerKnownUserFolderPath {
+    <#
+        The folders a person saves things into, resolved from the shell rather
+        than spelled out. Anything that enumerates or acts on one of these is
+        something that deletes somebody's tax return, so they are rejected in
+        code, where no list edit and no Finding from an unreviewed source can
+        reach.
+
+        Downloads has no Environment.SpecialFolder member under .NET Framework
+        4.x, so it comes from the User Shell Folders registry value that Explorer
+        itself reads (which also picks up a redirected Downloads folder), with the
+        profile-relative default as a fallback.
+
+        -ProfileRoot is that fallback's base. It is a parameter so a test can
+        point the resolver at a fabricated profile without touching the real one,
+        and so a caller can state which profile root it is asking about.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $ProfileRoot = ([Environment]::GetFolderPath('UserProfile'))
+    )
+
+    $paths = New-Object System.Collections.Generic.List[string]
+
+    foreach ($folder in 'Desktop', 'DesktopDirectory', 'MyDocuments', 'MyPictures', 'MyVideos', 'MyMusic', 'Personal', 'CommonDocuments', 'CommonPictures', 'CommonVideos', 'CommonMusic') {
+        $resolved = $null
+        try { $resolved = [Environment]::GetFolderPath($folder) } catch { $resolved = $null }
+        if (-not [string]::IsNullOrWhiteSpace($resolved)) { $paths.Add($resolved) }
+    }
+
+    $downloads = $null
+    try {
+        $downloads = [string](Get-ItemPropertyValue -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\User Shell Folders' -Name '{374DE290-123F-4565-9164-39C4925E467B}' -ErrorAction Stop)
+        if (-not [string]::IsNullOrWhiteSpace($downloads)) {
+            $downloads = [System.Environment]::ExpandEnvironmentVariables($downloads)
+        }
+    }
+    catch { $downloads = $null }
+
+    if ([string]::IsNullOrWhiteSpace($downloads) -and -not [string]::IsNullOrWhiteSpace($ProfileRoot)) {
+        $downloads = Join-Path -Path $ProfileRoot -ChildPath 'Downloads'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($downloads)) { $paths.Add($downloads) }
+
+    [string[]] @($paths.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
+function Get-OptimizerProtectedPath {
+    <#
+        Every filesystem path this project may not act on, with the reason and
+        with HOW the check applies. Two kinds, and conflating them is what makes a
+        naive version of this reject %TEMP% for being inside the user's profile:
+
+          Subtree  the known user folders. A candidate may neither sit INSIDE one
+                   nor CONTAIN one. Both directions, because a path containing
+                   Documents reaches it just as surely as a path inside it.
+
+          Root     the profile root, the Windows folder and the fixed drive roots.
+                   A candidate may not BE one or CONTAIN one, but living inside
+                   one is the normal case -- %TEMP% is inside the profile,
+                   %SystemRoot%\Logs\CBS is inside Windows, and both are
+                   legitimate targets.
+
+        Promoted out of Detectors\JunkFiles.ps1 by chunk P3-C1, on its second
+        consumer: the removal dispatcher is the LAST gate before anything is
+        acted on and, unlike a detector, it takes Findings from a run log or a
+        GUI rather than only from code it can see. The junk detector's own
+        Get-JunkProtectedPath now returns this list plus the one entry that
+        belongs to it alone (the WinSxS component store), so the universal rules
+        are stated once.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param()
+
+    foreach ($path in @(Get-OptimizerKnownUserFolderPath)) {
+        [pscustomobject]@{
+            Path   = $path
+            Match  = 'Subtree'
+            Reason = 'it is a folder the user saves things into, and this tool never acts on one'
+        }
+    }
+
+    $windowsRoot = [Environment]::GetEnvironmentVariable('SystemRoot')
+    if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
+        [pscustomobject]@{
+            Path   = $windowsRoot
+            Match  = 'Root'
+            Reason = 'the Windows folder as a whole is never a target; name the specific thing inside it'
+        }
+    }
+
+    $profileRoot = [Environment]::GetFolderPath('UserProfile')
+    if (-not [string]::IsNullOrWhiteSpace($profileRoot)) {
+        [pscustomobject]@{
+            Path   = $profileRoot
+            Match  = 'Root'
+            Reason = 'the user profile root contains the folders the user saves things into'
+        }
+    }
+
+    foreach ($drive in @(Get-OptimizerFixedDriveRoot)) {
+        [pscustomobject]@{
+            Path   = $drive
+            Match  = 'Root'
+            Reason = 'a whole drive is never a target'
+        }
+    }
+}
+
+function Get-OptimizerProtectedPathConflict {
+    # Returns the first protected path a candidate collides with, or $null.
+    # 'Subtree' entries collide in either direction -- a candidate inside
+    # Documents is obviously wrong, and so is one that CONTAINS Documents.
+    # 'Root' entries collide only when the candidate is, or contains, the root:
+    # everything a person owns lives inside the profile, so "inside" cannot be
+    # the test there.
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ProtectedPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $null -eq $ProtectedPath) { return $null }
+
+    foreach ($protected in $ProtectedPath) {
+        if ($null -eq $protected) { continue }
+
+        # NOT named $protectedPath: PowerShell variable names are case-INSENSITIVE,
+        # so that would be the $ProtectedPath parameter, whose [psobject[]] type
+        # constraint is re-applied on assignment -- the array would silently become
+        # a one-element array holding this string, and the next call would fail on
+        # a type conversion nowhere near the real mistake.
+        $protectedRoot = [string](Get-OptimizerProperty -InputObject $protected -Name 'Path')
+        if ([string]::IsNullOrWhiteSpace($protectedRoot)) { continue }
+
+        $mode = [string](Get-OptimizerProperty -InputObject $protected -Name 'Match' -Default 'Subtree')
+
+        # Contains-or-equals: Test-OptimizerPathWithin is true when the two paths
+        # are the same, so this covers "the candidate IS the protected root" too.
+        if (Test-OptimizerPathWithin -Path $protectedRoot -Container $Path) { return $protected }
+
+        if ($mode -ne 'Root' -and (Test-OptimizerPathWithin -Path $Path -Container $protectedRoot)) {
+            return $protected
+        }
+    }
+
+    $null
 }
 
 #endregion

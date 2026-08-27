@@ -54,6 +54,11 @@
         'Get-JunkLocationInventory'
         'Find-JunkFileLocation'
         'Invoke-JunkFileScan'
+
+        # P3-C1 - removal dispatcher (plans only; removes nothing)
+        'Get-RemovalContract'
+        'Get-RemovalPlan'
+        'Get-RemovalPreview'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

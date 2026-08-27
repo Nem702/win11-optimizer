@@ -111,9 +111,11 @@ $script:JunkScanSourceTypeName = 'Win11Optimizer.JunkScanSource'
 
 # The in-use verdicts. 'Undetermined' exists because a probe that cannot answer
 # must not be read as "free" -- it is counted separately and treated as in use.
-$script:JunkInUseFree         = 'Free'
-$script:JunkInUseHeld         = 'InUse'
-$script:JunkInUseUndetermined = 'Undetermined'
+# Taken from the shared constants rather than restated, so the detector and the
+# removal dispatcher cannot drift apart on spelling (chunk P3-C1).
+$script:JunkInUseFree         = $script:OptimizerInUseFree
+$script:JunkInUseHeld         = $script:OptimizerInUseHeld
+$script:JunkInUseUndetermined = $script:OptimizerInUseUndetermined
 
 #endregion
 
@@ -123,76 +125,46 @@ function Get-JunkKnownUserFolderPath {
     <#
         The folders a person saves things into, resolved from the shell rather
         than spelled out. A junk detector that enumerates any of these is a junk
-        detector that offers to delete someone's tax return, so they are not
-        "flagged with consent" and not "reported as inventory" -- they are
-        rejected at list-load time, in code, where no list edit can reach.
+        detector that offers to delete someone's tax return.
 
-        Downloads has no Environment.SpecialFolder member under .NET Framework
-        4.x, so it comes from the User Shell Folders registry value that Explorer
-        itself reads (which also picks up a redirected Downloads folder), with the
-        profile-relative default as a fallback.
+        Promoted to Shared\Inventory.ps1 as Get-OptimizerKnownUserFolderPath by
+        chunk P3-C1, on its second consumer. This name stays as a delegation.
+
+        The profile root is passed explicitly rather than left to the shared
+        default: it is the fallback base for Downloads, which has no
+        Environment.SpecialFolder member under .NET Framework 4.x, and this file's
+        claim is that every protected folder it knows about comes from the shell
+        and never from a literal.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
     param()
 
-    $paths = New-Object System.Collections.Generic.List[string]
-
-    foreach ($folder in 'Desktop', 'DesktopDirectory', 'MyDocuments', 'MyPictures', 'MyVideos', 'MyMusic', 'Personal', 'CommonDocuments', 'CommonPictures', 'CommonVideos', 'CommonMusic') {
-        $resolved = $null
-        try { $resolved = [Environment]::GetFolderPath($folder) } catch { $resolved = $null }
-        if (-not [string]::IsNullOrWhiteSpace($resolved)) { $paths.Add($resolved) }
-    }
-
-    $downloads = $null
-    try {
-        $downloads = [string](Get-ItemPropertyValue -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\User Shell Folders' `
-            -Name '{374DE290-123F-4565-9164-39C4925E467B}' -ErrorAction Stop)
-        if (-not [string]::IsNullOrWhiteSpace($downloads)) {
-            $downloads = [System.Environment]::ExpandEnvironmentVariables($downloads)
-        }
-    }
-    catch { $downloads = $null }
-
-    if ([string]::IsNullOrWhiteSpace($downloads)) {
-        $profileRoot = [Environment]::GetFolderPath('UserProfile')
-        if (-not [string]::IsNullOrWhiteSpace($profileRoot)) {
-            $downloads = Join-Path -Path $profileRoot -ChildPath 'Downloads'
-        }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($downloads)) { $paths.Add($downloads) }
-
-    [string[]] @($paths.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    Get-OptimizerKnownUserFolderPath -ProfileRoot ([Environment]::GetFolderPath('UserProfile'))
 }
 
 function Get-JunkProtectedPath {
     <#
         Every path this detector may not enumerate, with the reason it may not,
-        and HOW the check applies. Two kinds, and conflating them is what makes a
-        naive version of this reject %TEMP% for being inside the user's profile:
+        and HOW the check applies.
 
-          Subtree  the known user folders and the component store. A curated path
-                   may neither sit INSIDE one nor CONTAIN one. Both directions,
-                   because a path containing Documents would enumerate it just as
-                   surely as a path inside it.
+        The universal half -- the known user folders (Subtree), the profile root,
+        the Windows folder and the fixed drive roots (Root) -- was promoted to
+        Shared\Inventory.ps1 as Get-OptimizerProtectedPath by chunk P3-C1, because
+        the removal dispatcher is the last gate before anything is acted on and
+        needs exactly the same list. See that function for why the two match modes
+        exist and why conflating them rejects %TEMP%.
 
-          Root     the profile root, the Windows folder and the drive roots. A
-                   curated path may not BE one or CONTAIN one, but living inside
-                   one is the normal case -- %TEMP% is inside the profile and
-                   %SystemRoot%\Temp is inside Windows, and both are legitimate
-                   junk locations.
+        What is left here is the one entry that belongs to this detector alone:
+        the component store. It is not on the shared list because it is not a
+        universal rule about acting on paths -- it is a statement about who owns
+        WinSxS, and the answer is DISM.
     #>
     [CmdletBinding()]
     [OutputType([psobject])]
     param()
 
-    foreach ($path in @(Get-JunkKnownUserFolderPath)) {
-        [pscustomobject]@{
-            Path   = $path
-            Match  = 'Subtree'
-            Reason = 'it is a folder the user saves things into, and this detector never enumerates one'
-        }
-    }
+    Get-OptimizerProtectedPath
 
     $windowsRoot = [Environment]::GetEnvironmentVariable('SystemRoot')
     if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
@@ -200,28 +172,6 @@ function Get-JunkProtectedPath {
             Path   = (Join-Path -Path $windowsRoot -ChildPath 'WinSxS')
             Match  = 'Subtree'
             Reason = 'the component store belongs to DISM alone, and getting it wrong breaks Windows servicing'
-        }
-        [pscustomobject]@{
-            Path   = $windowsRoot
-            Match  = 'Root'
-            Reason = 'the Windows folder as a whole is not a junk location; name the specific folder inside it'
-        }
-    }
-
-    $profileRoot = [Environment]::GetFolderPath('UserProfile')
-    if (-not [string]::IsNullOrWhiteSpace($profileRoot)) {
-        [pscustomobject]@{
-            Path   = $profileRoot
-            Match  = 'Root'
-            Reason = 'the user profile root contains the folders the user saves things into'
-        }
-    }
-
-    foreach ($drive in @(Get-JunkFixedDriveRoot)) {
-        [pscustomobject]@{
-            Path   = $drive
-            Match  = 'Root'
-            Reason = 'a whole drive is never a junk location'
         }
     }
 }
@@ -252,63 +202,30 @@ function Get-JunkForcedInventoryPath {
 }
 
 function Get-JunkFixedDriveRoot {
-    # Fixed-drive roots, for the Recycle Bin resolver and the "a whole drive is
-    # never a location" rule. Removable and network drives are out: this tool
-    # does not clean a USB stick it happens to find.
+    # Promoted to Shared\Inventory.ps1 as Get-OptimizerFixedDriveRoot by chunk
+    # P3-C1 with the rest of the protected-path cluster. Delegation only.
     [CmdletBinding()]
     [OutputType([string[]])]
     param()
 
-    $roots = New-Object System.Collections.Generic.List[string]
-    try {
-        foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
-            try {
-                if ($drive.DriveType -ne [System.IO.DriveType]::Fixed) { continue }
-                if (-not $drive.IsReady) { continue }
-                $roots.Add($drive.RootDirectory.FullName)
-            }
-            catch { continue }
-        }
-    }
-    catch {
-        Write-Verbose "Could not enumerate drives: $($_.Exception.Message)"
-    }
-
-    [string[]] $roots.ToArray()
+    Get-OptimizerFixedDriveRoot
 }
 
 function ConvertTo-JunkComparablePath {
-    # Normalised form for path comparison: full path, no trailing separator
-    # (except on a drive root, where the separator is part of the path), used as
-    # the dedupe key and by the containment test. Returns $null for anything that
-    # will not normalise, and a caller must treat that as "do not touch this".
+    # Promoted to Shared\Inventory.ps1 as ConvertTo-OptimizerComparablePath by
+    # chunk P3-C1 with the rest of the protected-path cluster. Delegation only.
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path
     )
 
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-
-    $full = $null
-    try { $full = [System.IO.Path]::GetFullPath($Path) } catch { return $null }
-    if ([string]::IsNullOrWhiteSpace($full)) { return $null }
-
-    $separator = [System.IO.Path]::DirectorySeparatorChar
-    if ($full.Length -gt 3) { $full = $full.TrimEnd($separator) }
-    $full
+    ConvertTo-OptimizerComparablePath -Path $Path
 }
 
 function Test-JunkPathWithin {
-    <#
-        Is $Path the same as, or underneath, $Container? Ordinal case-insensitive
-        on normalised paths, with an explicit separator boundary so 'C:\Temp2' is
-        not treated as being inside 'C:\Temp'.
-
-        Deliberately a string comparison and not a resolution: this runs BEFORE
-        anything is enumerated, on paths that may not exist yet, and it is the
-        gate that keeps the detector out of the user's own folders.
-    #>
+    # Promoted to Shared\Inventory.ps1 as Test-OptimizerPathWithin by chunk P3-C1
+    # with the rest of the protected-path cluster. Delegation only.
     [CmdletBinding()]
     [OutputType([bool])]
     param(
@@ -316,26 +233,14 @@ function Test-JunkPathWithin {
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Container
     )
 
-    $left  = ConvertTo-JunkComparablePath -Path $Path
-    $right = ConvertTo-JunkComparablePath -Path $Container
-    if ([string]::IsNullOrWhiteSpace($left) -or [string]::IsNullOrWhiteSpace($right)) { return $false }
-
-    if ([string]::Equals($left, $right, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
-
-    $separator = [string][System.IO.Path]::DirectorySeparatorChar
-    $prefix = $right
-    if (-not $prefix.EndsWith($separator)) { $prefix += $separator }
-
-    $left.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    Test-OptimizerPathWithin -Path $Path -Container $Container
 }
 
 function Get-JunkProtectedPathConflict {
-    # Returns the first protected path a candidate collides with, or $null.
-    # 'Subtree' entries collide in either direction -- a candidate inside
-    # Documents is obviously wrong, and so is one that CONTAINS Documents.
-    # 'Root' entries collide only when the candidate is, or contains, the root:
-    # everything a person owns lives inside the profile, so "inside" cannot be
-    # the test there.
+    # Promoted to Shared\Inventory.ps1 as Get-OptimizerProtectedPathConflict by
+    # chunk P3-C1, on its second consumer: the removal dispatcher runs the same
+    # directional check as the LAST gate before anything is acted on. This name
+    # stays as a delegation so the call sites in this file are untouched.
     [CmdletBinding()]
     [OutputType([psobject])]
     param(
@@ -343,31 +248,7 @@ function Get-JunkProtectedPathConflict {
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ProtectedPath
     )
 
-    if ([string]::IsNullOrWhiteSpace($Path) -or $null -eq $ProtectedPath) { return $null }
-
-    foreach ($protected in $ProtectedPath) {
-        if ($null -eq $protected) { continue }
-
-        # NOT named $protectedPath: PowerShell variable names are case-INSENSITIVE,
-        # so that would be the $ProtectedPath parameter, whose [psobject[]] type
-        # constraint is re-applied on assignment -- the array would silently become
-        # a one-element array holding this string, and the next call would fail on
-        # a type conversion nowhere near the real mistake.
-        $protectedRoot = [string](Get-OptimizerProperty -InputObject $protected -Name 'Path')
-        if ([string]::IsNullOrWhiteSpace($protectedRoot)) { continue }
-
-        $mode = [string](Get-OptimizerProperty -InputObject $protected -Name 'Match' -Default 'Subtree')
-
-        # Contains-or-equals: Test-JunkPathWithin is true when the two paths are
-        # the same, so this covers "the candidate IS the protected root" as well.
-        if (Test-JunkPathWithin -Path $protectedRoot -Container $Path) { return $protected }
-
-        if ($mode -ne 'Root' -and (Test-JunkPathWithin -Path $Path -Container $protectedRoot)) {
-            return $protected
-        }
-    }
-
-    $null
+    Get-OptimizerProtectedPathConflict -Path $Path -ProtectedPath $ProtectedPath
 }
 
 #endregion
@@ -563,17 +444,15 @@ function Test-JunkFileInUse {
         Is another process holding this file open? Returns one of Free / InUse /
         Undetermined, and the caller treats the last two identically.
 
-        Probed by opening the file for READ with FileShare None: if anyone else
-        has it open at all, the open fails with a sharing violation. Nothing is
-        written and the handle is closed immediately.
+        The probe itself lives in Shared\Inventory.ps1 as Test-OptimizerFileInUse,
+        promoted there by chunk P3-C1 on its second consumer -- the removal
+        dispatcher re-checks the same gate at plan time -- exactly as
+        Test-StartupTargetPresent was promoted by P2-C4. This name stays as a
+        delegation so the call sites in this file and their tests are untouched.
 
-        "Cannot tell" is never "free". A denied open, a file that vanished between
-        enumeration and probe, a path too long for the API -- all of them mean the
-        answer is unknown, and an unknown file stays out of the deletable set.
-
-        Cost, measured on this machine: 0.034 ms per file (1,964 files in %TEMP% in
-        0.067 s), so the gate runs over every age-eligible file rather than a
-        sample.
+        The read-only access is stated here rather than left to the shared
+        default: it is the whole safety claim of the probe, and this detector is
+        the one that runs it over tens of thousands of files.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -581,29 +460,7 @@ function Test-JunkFileInUse {
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Path
     )
 
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $script:JunkInUseUndetermined }
-
-    $stream = $null
-    try {
-        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
-        return $script:JunkInUseFree
-    }
-    catch [System.IO.IOException] {
-        # A sharing violation is the answer this gate exists for: somebody else
-        # has it open. FileNotFoundException derives from IOException and lands
-        # here too, which is correct -- a file that disappeared mid-scan is not
-        # something to hand P3-C1 a path to.
-        return $script:JunkInUseHeld
-    }
-    catch {
-        Write-Verbose "Could not determine whether '$Path' is in use: $($_.Exception.Message)"
-        return $script:JunkInUseUndetermined
-    }
-    finally {
-        if ($null -ne $stream) {
-            try { $stream.Dispose() } catch { }
-        }
-    }
+    Test-OptimizerFileInUse -Path $Path -Access ([System.IO.FileAccess]::Read)
 }
 
 function Get-JunkDirectoryContent {

@@ -615,23 +615,99 @@ function Get-OptimizerLogPath {
 
 #endregion
 
-# Shared\ holds the plumbing more than one detector needs: the registry uninstall
-# walk, the normalised installed-app record, the match-pattern dialect and the
-# scan-result wrapper (promoted out of OemBloatware.ps1 by chunk P2-C3). It is
-# dot-sourced FIRST -- detector files reference its module-scope constants at
-# dot-source time, so load order matters.
-$sharedFiles = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Shared') -Filter '*.ps1' -File -ErrorAction SilentlyContinue)
-foreach ($sharedFile in $sharedFiles) {
-    . $sharedFile.FullName
+#region The source-folder loader
+
+# The module's source is split across three folders, dot-sourced in this order:
+#
+#   Shared\     plumbing more than one consumer needs -- the registry uninstall
+#               walk, the installed-app record, the match-pattern dialect, the
+#               scan-result wrapper, the path probes and the protected-path gate.
+#               FIRST, because detector and removal files reference its
+#               module-scope constants at dot-source time.
+#   Detectors\  one file per sweep category (chunks P2-C1..C4).
+#   Removal\    the removal dispatcher (chunk P3-C1). AFTER Detectors\, because
+#               it reads their module-scope constants -- the Run-key view table
+#               and the StartupApproved store paths -- rather than restating them.
+#
+# Every one of them is REQUIRED. This used to be
+#
+#     Get-ChildItem -Path ... -Filter '*.ps1' -File -ErrorAction SilentlyContinue
+#
+# which is this project's signature failure mode sitting in the loader itself: an
+# absent or unreadable folder produced zero files, no error, and a module that
+# imported "successfully" with every name still in FunctionsToExport and none of
+# them defined. Shared\ became load-bearing in P2-C3, so the failure would be a
+# module that exports 24 functions and defines 10.
+#
+# Get-ChildItem cannot be used to detect it either. docs\REVIEW.md records the
+# measurement: on a folder the current user cannot list it returns zero items and
+# raises no error EVEN WITH -ErrorAction Stop. Only the .NET call distinguishes
+# "empty" from "not allowed to look", by throwing.
+#
+# The three folders are dot-sourced by three explicit statements rather than by a
+# loop over a list. The ORDER is the load-bearing thing here, and three lines say
+# it where a loop would hide it behind a variable.
+
+function Get-OptimizerSourceFile {
+    <#
+    .SYNOPSIS
+        Returns the .ps1 files in one required module source folder, or throws.
+
+    .DESCRIPTION
+        Fails loud. A folder that is missing, or present and unreadable, throws
+        with a message naming the folder -- never an empty list, which is how a
+        half-loaded module gets imported and only fails later at the first call
+        to a function that was exported but never defined.
+
+        Enumerated with [System.IO.Directory]::GetFiles rather than
+        Get-ChildItem: see the block comment above.
+
+        Sorted ordinally so the dot-source order is the same on every machine.
+        A folder that exists, is readable and is genuinely empty returns an empty
+        array without error -- that is a real answer, not a gap.
+
+    .PARAMETER Path
+        The folder to read.
+
+    .PARAMETER Name
+        The folder's short name, for the error message.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Path,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Name
+    )
+
+    $files = $null
+    try {
+        $files = [System.IO.Directory]::GetFiles($Path, '*.ps1')
+    }
+    catch {
+        # PowerShell wraps an exception thrown by a .NET METHOD in a
+        # MethodInvocationException, so the useful type and message are one level
+        # down. Get-OptimizerInnerException in Shared\ does this properly, and is
+        # not available yet -- this runs before Shared\ is dot-sourced.
+        $inner = $_.Exception.GetBaseException()
+        throw "Win11Optimizer.Engine cannot be imported: the required '$Name' source folder at '$Path' could not be read. $($inner.GetType().Name): $($inner.Message)"
+    }
+
+    [string[]] @(@($files) | Sort-Object -CaseSensitive)
 }
 
-# Detector chunks (P2-C1..C4) drop one file per sweep category in Detectors\ and
-# add their public function names to the export list below and to
-# FunctionsToExport in Win11Optimizer.Engine.psd1.
-$detectorFiles = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Detectors') -Filter '*.ps1' -File -ErrorAction SilentlyContinue)
-foreach ($detectorFile in $detectorFiles) {
-    . $detectorFile.FullName
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Shared') -Name 'Shared')) {
+    . $optimizerSourceFile
 }
+
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Detectors') -Name 'Detectors')) {
+    . $optimizerSourceFile
+}
+
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Removal') -Name 'Removal')) {
+    . $optimizerSourceFile
+}
+
+#endregion
 
 Export-ModuleMember -Function @(
     'New-Finding'
@@ -670,4 +746,10 @@ Export-ModuleMember -Function @(
     'Get-JunkLocationInventory'
     'Find-JunkFileLocation'
     'Invoke-JunkFileScan'
+
+    # P3-C1 - removal dispatcher (Removal/Dispatcher.ps1). Plans only:
+    # nothing in this chunk removes, disables or writes anything.
+    'Get-RemovalContract'
+    'Get-RemovalPlan'
+    'Get-RemovalPreview'
 )
