@@ -1,5 +1,5 @@
 <#
-    Win11Optimizer.Engine — core engine module.
+    Win11Optimizer.Engine -- core engine module.
 
     Scope of this file (chunk P1-C1): the shared contract + plumbing that every
     later detector and the removal dispatcher build on:
@@ -7,7 +7,7 @@
       * the elevation check              (Test-IsElevated)
       * the JSON-lines run log scaffold  (Start-/Write-/Stop-OptimizerLog)
 
-    No detection, no removal, no registry/Appx queries live here — see docs/PLAN.md
+    No detection, no removal, no registry/Appx queries live here -- see docs/PLAN.md
     for which chunk owns what.
 #>
 
@@ -27,7 +27,7 @@ $script:FindingCategories = @(
 
 $script:FindingConfidences = @(
     'Known'      # matched the curated known-bloatware whitelist
-    'Heuristic'  # surfaced by a usage heuristic — never presentable as "safe"
+    'Heuristic'  # surfaced by a usage heuristic -- never presentable as "safe"
 )
 
 $script:FindingRemovalMethods = @(
@@ -79,7 +79,7 @@ $script:FindingTypeName = 'Win11Optimizer.Finding'
 function New-Finding {
     <#
     .SYNOPSIS
-        Creates a Finding — the single object shape every detector returns.
+        Creates a Finding -- the single object shape every detector returns.
 
     .DESCRIPTION
         Returns a PSCustomObject tagged with the PSTypeName 'Win11Optimizer.Finding'.
@@ -107,7 +107,7 @@ function New-Finding {
 
     .PARAMETER Evidence
         One or more strings explaining why this item was flagged. At least one is
-        required — nothing is ever surfaced to the user without a stated reason.
+        required -- nothing is ever surfaced to the user without a stated reason.
 
     .PARAMETER Confidence
         'Known' for a curated-whitelist match, 'Heuristic' for anything surfaced
@@ -203,7 +203,7 @@ function Test-Finding {
 
     .DESCRIPTION
         New-Finding validates at construction, but Findings also cross boundaries
-        where the type tag alone is not a guarantee — deserialized from a run log,
+        where the type tag alone is not a guarantee -- deserialized from a run log,
         handed in by the GUI, or produced by a future detector. Anything that
         consumes Findings (notably the removal dispatcher, chunk P3-C1) should
         gate on this rather than trusting the shape.
@@ -359,7 +359,7 @@ function Get-OptimizerLogRoot {
 
     .DESCRIPTION
         Defaults to the 'logs' folder at the repo root (two levels above this
-        module). Override with the WIN11OPTIMIZER_LOGROOT environment variable —
+        module). Override with the WIN11OPTIMIZER_LOGROOT environment variable --
         a packaged install will not sit in a repo working tree.
     #>
     [CmdletBinding()]
@@ -468,7 +468,7 @@ function Write-OptimizerLog {
         Severity: Debug, Info, Warning or Error. Defaults to Info.
 
     .PARAMETER Data
-        Optional structured payload — a hashtable or any object that survives
+        Optional structured payload -- a hashtable or any object that survives
         ConvertTo-Json. A Finding can be passed here directly.
 
     .PARAMETER PassThru
@@ -721,21 +721,21 @@ Export-ModuleMember -Function @(
     'Get-OptimizerLogPath'
     'Get-OptimizerLogRoot'
 
-    # P2-C1 — OemBloatware detector (Detectors/OemBloatware.ps1)
+    # P2-C1 -- OemBloatware detector (Detectors/OemBloatware.ps1)
     'Get-KnownBloatwareList'
     'Find-KnownBloatware'
     'Invoke-OemBloatwareScan'
 
-    # P2-C3 — shared inventory (Shared/Inventory.ps1)
+    # P2-C3 -- shared inventory (Shared/Inventory.ps1)
     'Get-RegistryInstalledApp'
 
-    # P2-C3 — UnusedApp detector (Detectors/UnusedApps.ps1)
+    # P2-C3 -- UnusedApp detector (Detectors/UnusedApps.ps1)
     'Get-UnusedAppExclusionList'
     'Get-AppUsageClassification'
     'Find-UnusedApp'
     'Invoke-UnusedAppScan'
 
-    # P2-C2 — StartupItem / Service detector (Detectors/StartupItems.ps1)
+    # P2-C2 -- StartupItem / Service detector (Detectors/StartupItems.ps1)
     'Get-KnownStartupItemList'
     'Get-StartupItemInventory'
     'Find-UnwantedStartupItem'
@@ -752,4 +752,16 @@ Export-ModuleMember -Function @(
     'Get-RemovalContract'
     'Get-RemovalPlan'
     'Get-RemovalPreview'
+
+    # P3-C2 - the append-only action ledger (Removal/ActionLog.ps1). Appends to
+    # its own log files and changes nothing about the machine.
+    'Get-OptimizerActionLogPath'
+    'Write-OptimizerAction'
+    'Get-OptimizerActionLog'
+    'Get-OptimizerRunReceipt'
+
+    # P3-C2 - the best-effort System Restore checkpoint (Removal/RestorePoint.ps1).
+    # The ONE call in this project that changes the state of the machine, kept in
+    # a file of its own so that fact can be audited in one place.
+    'New-OptimizerRestorePoint'
 )

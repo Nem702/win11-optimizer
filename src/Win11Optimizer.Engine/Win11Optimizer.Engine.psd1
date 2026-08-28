@@ -29,21 +29,21 @@
         'Get-OptimizerLogPath'
         'Get-OptimizerLogRoot'
 
-        # P2-C1 — OemBloatware detector
+        # P2-C1 -- OemBloatware detector
         'Get-KnownBloatwareList'
         'Find-KnownBloatware'
         'Invoke-OemBloatwareScan'
 
-        # P2-C3 — shared inventory
+        # P2-C3 -- shared inventory
         'Get-RegistryInstalledApp'
 
-        # P2-C3 — UnusedApp detector
+        # P2-C3 -- UnusedApp detector
         'Get-UnusedAppExclusionList'
         'Get-AppUsageClassification'
         'Find-UnusedApp'
         'Invoke-UnusedAppScan'
 
-        # P2-C2 — StartupItem / Service detector
+        # P2-C2 -- StartupItem / Service detector
         'Get-KnownStartupItemList'
         'Get-StartupItemInventory'
         'Find-UnwantedStartupItem'
@@ -59,6 +59,14 @@
         'Get-RemovalContract'
         'Get-RemovalPlan'
         'Get-RemovalPreview'
+
+        # P3-C2 - the append-only action ledger (Removal/ActionLog.ps1) and the
+        # best-effort restore point (Removal/RestorePoint.ps1).
+        'Get-OptimizerActionLogPath'
+        'Write-OptimizerAction'
+        'Get-OptimizerActionLog'
+        'Get-OptimizerRunReceipt'
+        'New-OptimizerRestorePoint'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()
