@@ -83,6 +83,14 @@
         'Get-ReviewSelection'
         'Get-ReviewConfirmation'
         'Show-ReviewScreen'
+
+        # P4-C2 - picks to plans, and a confirmed set of plans to the executor
+        # (Review/Execute.ps1). The two joins between the screen and the machine.
+        # New-OptimizerExecutionPlan reads and plans; Invoke-OptimizerExecutionPlan
+        # is the only thing outside Removal/ that can change anything, and it does
+        # it by calling Invoke-RemovalPlan and nothing else.
+        'New-OptimizerExecutionPlan'
+        'Invoke-OptimizerExecutionPlan'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

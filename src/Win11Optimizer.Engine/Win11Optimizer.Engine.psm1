@@ -628,10 +628,12 @@ function Get-OptimizerLogPath {
 #   Removal\    the removal dispatcher (chunk P3-C1). AFTER Detectors\, because
 #               it reads their module-scope constants -- the Run-key view table
 #               and the StartupApproved store paths -- rather than restating them.
-#   Review\     the console review screen (chunk P4-C1). LAST, because it is the
-#               only consumer of all three: it renders what the detectors found,
-#               prints the dispatcher's own preview text, and reads the ledger's
-#               receipt. Nothing depends on it.
+#   Review\     the console review screen (chunk P4-C1) and the execution bridge
+#               (chunk P4-C2). LAST, because it is the only consumer of all
+#               three: it renders what the detectors found, prints the
+#               dispatcher's own preview text, reads the ledger's receipt and --
+#               from Execute.ps1 and nowhere else in this folder -- hands a
+#               confirmed set of plans to the executor. Nothing depends on it.
 #
 # Every one of them is REQUIRED. This used to be
 #
@@ -790,4 +792,12 @@ Export-ModuleMember -Function @(
     'Get-ReviewSelection'
     'Get-ReviewConfirmation'
     'Show-ReviewScreen'
+
+    # P4-C2 - the two joins between the screen and the machine
+    # (Review/Execute.ps1). New-OptimizerExecutionPlan turns the screen's picks
+    # into plans and changes nothing; Invoke-OptimizerExecutionPlan performs a
+    # confirmed set of them, all or none, by calling Invoke-RemovalPlan and
+    # Undo-RemovalAction -- which are its entire write surface.
+    'New-OptimizerExecutionPlan'
+    'Invoke-OptimizerExecutionPlan'
 )

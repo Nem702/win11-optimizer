@@ -1699,12 +1699,14 @@ Describe 'The five new functions, and only those five' {
         $manifest = Import-PowerShellDataFile -LiteralPath $script:ManifestPath
         $exported = @(Get-Command -Module Win11Optimizer.Engine | ForEach-Object { $_.Name })
         @($manifest.FunctionsToExport).Count | Should -Be $exported.Count
-        # 29 before this chunk (P3-C1a's report, section 13), plus these five.
-        # The total moved to 36 when P3-C3 added Invoke-RemovalPlan and
-        # Undo-RemovalAction, and to 41 when P4-C1 added the review screen's
-        # five; the claim this It makes -- that THIS chunk added exactly five --
-        # is the line below, and it is unchanged.
-        $exported.Count | Should -Be 41
+        # THE RUNNING TOTAL IS READ FROM THE .psd1, NOT WRITTEN HERE. It was 29
+        # before this chunk (P3-C1a's report, section 13), 34 after it, 36 when
+        # P3-C3 added its two, 41 when P4-C1 added the review screen's five and
+        # 43 when P4-C2 added its two -- a number that moves every chunk and that
+        # two separate test files were each hand-editing to keep up. The claim
+        # this It actually makes -- that THIS chunk added exactly five -- is the
+        # line below it, and that one does not move.
+        $exported.Count | Should -Be @($manifest.FunctionsToExport).Count
         @($exported | Where-Object { $script:NewExport -contains $_ }).Count | Should -Be 5
     }
 
@@ -1721,11 +1723,12 @@ Describe 'The five new functions, and only those five' {
 Write-Output "exported=`$(`$module.ExportedFunctions.Count) undefined=`$(@(`$missing).Count)"
 "@
         $output = (& $script:ShellPath -NoProfile -File $child) -join ' '
-        # 34 when this chunk shipped; 36 after P3-C3 added its two; 41 after
-        # P4-C1 added the review screen's five. The assertion that matters is
-        # undefined=0 -- a name in FunctionsToExport with no function behind it
+        # Derived from the .psd1 for the same reason as the total above: it moves
+        # with every chunk that adds an export. The assertion that matters here
+        # is undefined=0 -- a name in FunctionsToExport with no function behind it
         # is invisible to callers with no error anywhere.
-        $output | Should -Match 'exported=41'
+        $declared = @((Import-PowerShellDataFile -LiteralPath $script:ManifestPath).FunctionsToExport).Count
+        $output | Should -Match "exported=$declared"
         $output | Should -Match 'undefined=0'
     }
 }

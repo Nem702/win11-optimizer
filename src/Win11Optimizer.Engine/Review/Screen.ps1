@@ -234,13 +234,21 @@ function Get-ReviewColumnWidth {
 
         Returns the widths, and never returns one below the floor -- a table that
         genuinely cannot fit runs long rather than becoming a column of ellipses.
+
+        MinimumWidth raises the floor for particular columns, by index. It exists
+        for the disambiguating FindingId column: a column squeezed until two of
+        its cells truncate to the same string disambiguates nothing, and does it
+        silently, which is this project's signature failure wearing a fix. See
+        Get-ReviewIdColumn, which works out how narrow that column may be and
+        still tell the rows it exists for apart.
     #>
     [CmdletBinding()]
     [OutputType([int[]])]
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]] $Header,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowNull()] [psobject[]] $Row,
-        [Parameter(Mandatory)] [int] $Width
+        [Parameter(Mandatory)] [int] $Width,
+        [Parameter()] [AllowEmptyCollection()] [AllowNull()] [int[]] $MinimumWidth = @()
     )
 
     $count = @($Header).Count
@@ -264,16 +272,33 @@ function Get-ReviewColumnWidth {
         $null = $widths.Add($widest)
     }
 
+    # The floor for each column: the shared one, raised where the caller asked
+    # for more. Built before the squeeze so the loop reads an array rather than
+    # re-deciding the rule on every pass.
+    $floor = New-Object 'System.Collections.Generic.List[int]'
+    $requested = [int[]] @($MinimumWidth)
+    for ($index = 0; $index -lt $count; $index++) {
+        $value = $script:ReviewMinimumColumnWidth
+        if ($index -lt $requested.Count -and $requested[$index] -gt $value) { $value = [int] $requested[$index] }
+        $null = $floor.Add($value)
+    }
+
     $gaps = $script:ReviewColumnGap * ($count - 1)
     # Shrink the widest column one character at a time. Slower than solving it,
     # and it keeps the narrow columns intact -- which is what a reader needs,
     # because the wide column is the prose one and the narrow ones are the facts.
+    #
+    # The widest column ABOVE ITS OWN FLOOR, rather than the widest column
+    # outright: with one floor shared by every column those two are the same
+    # choice, and with a raised floor on one of them they are not. When nothing
+    # is above its floor the table gives up and runs long, exactly as before.
     while ((($widths | Measure-Object -Sum).Sum + $gaps) -gt $Width) {
-        $largest = 0
-        for ($index = 1; $index -lt $count; $index++) {
-            if ($widths[$index] -gt $widths[$largest]) { $largest = $index }
+        $largest = -1
+        for ($index = 0; $index -lt $count; $index++) {
+            if ($widths[$index] -le $floor[$index]) { continue }
+            if ($largest -lt 0 -or $widths[$index] -gt $widths[$largest]) { $largest = $index }
         }
-        if ($widths[$largest] -le $script:ReviewMinimumColumnWidth) { break }
+        if ($largest -lt 0) { break }
         $widths[$largest] = $widths[$largest] - 1
     }
 
@@ -297,14 +322,15 @@ function Format-ReviewTable {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowNull()] [psobject[]] $Row,
         [Parameter(Mandatory)] [int] $Width,
         [Parameter(Mandatory)] [bool] $Colour,
-        [Parameter()] [string] $Indent = '  '
+        [Parameter()] [string] $Indent = '  ',
+        [Parameter()] [AllowEmptyCollection()] [AllowNull()] [int[]] $MinimumWidth = @()
     )
 
     $rows = @($Row)
     if ($rows.Count -lt 1) { return [string[]] @() }
 
     $available = $Width - $Indent.Length
-    $widths = Get-ReviewColumnWidth -Header $Header -Row $rows -Width $available
+    $widths = Get-ReviewColumnWidth -Header $Header -Row $rows -Width $available -MinimumWidth $MinimumWidth
     $count  = @($Header).Count
 
     $lines = New-Object System.Collections.Generic.List[string]
@@ -444,6 +470,137 @@ function Get-ReviewShortReason {
     $first
 }
 
+function Add-ReviewCell {
+    <#
+        Splices one value into a cell array, or hands the array back untouched.
+
+        The disambiguating id column exists only in the sections that need one,
+        and it has to be spliced into four things that must stay parallel -- the
+        column headers, each row's cells and each row's styles. One helper, used
+        for all of them, is what keeps them the same length: a header list and a
+        cell list that disagree by one is a table whose columns are all shifted
+        by one and which raises nothing.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]] $Value,
+        [Parameter(Mandatory)] [int] $Index,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Insert,
+        [Parameter(Mandatory)] [bool] $Show
+    )
+
+    $values = [string[]] @($Value)
+    if (-not $Show) { return $values }
+
+    $spliced = New-Object System.Collections.Generic.List[string]
+    for ($position = 0; $position -lt $values.Count; $position++) {
+        if ($position -eq $Index) { $null = $spliced.Add($Insert) }
+        $null = $spliced.Add([string] $values[$position])
+    }
+    if ($Index -ge $values.Count) { $null = $spliced.Add($Insert) }
+
+    [string[]] @($spliced.ToArray())
+}
+
+function Get-ReviewIdColumn {
+    <#
+        Does this section need a FindingId column, and how narrow may it be
+        squeezed before it stops doing its job?
+
+        WHY IT EXISTS. Display name is provably not an identity in this project
+        (docs\STATE.md, 2026-08-26: 'Discord' x2, 'Gaming Services' x2), and
+        P4-C1 shipped a screen where two rows read 'Microsoft Copilot' with the
+        same reason beside them and nothing at all to tell them apart -- one is
+        an Appx package and one is a Win32 install, and a person picking row 3
+        could not know which. Where a name repeats inside one section, every row
+        of that section gains a column carrying the Finding's own id.
+
+        EVERY row of it, not only the colliding ones. A cell that is blank by
+        design is indistinguishable from a cell that came out blank by accident,
+        and this screen already has a test that no rendered cell is empty.
+
+        Names are compared case-insensitively: two rows whose names differ only
+        in case are as confusable on screen as two identical ones.
+
+        THE WIDTH. Get-ReviewTruncatedText keeps Width-3 characters and appends
+        '...', so two ids are still distinct at width W exactly when their first
+        W-3 characters differ. A disambiguating column squeezed past that point
+        shows the same text twice and disambiguates nothing -- silently, which is
+        the failure this project is built against. So this returns the narrowest
+        width at which the colliding ids are still tellable apart, as a floor for
+        Get-ReviewColumnWidth.
+
+        Only the colliding groups have to stay distinct. Two rows with different
+        names that truncate to the same id are not a person's problem: their
+        names already tell them apart, and demanding it would push every other
+        column to its floor for nothing.
+
+        Where two Findings carry the SAME id as well as the same name there is no
+        width that separates them, and the floor stays the shared one. Nothing
+        can be said about them that is true, and widening a column to pretend
+        otherwise would be worse than leaving it.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowNull()] $Finding
+    )
+
+    # The column sits at index 2 of every section's table: after '#' and after
+    # the name it disambiguates. Stated once, here, because the header, the
+    # cells, the styles and the floor all have to agree about it.
+    $columnIndex = 2
+
+    $none = [pscustomobject]@{
+        Show         = $false
+        Index        = $columnIndex
+        Header       = 'FindingId'
+        MinimumWidth = [int[]] @()
+    }
+
+    $entries = @(@($Finding) | Where-Object { $null -ne $_ })
+    if ($entries.Count -lt 2) { return $none }
+
+    $byName = @{}
+    foreach ($entry in $entries) {
+        $name = [string](Get-OptimizerProperty -InputObject $entry -Name 'DisplayName' -Default '')
+        $key  = $name.ToUpperInvariant()
+        if (-not $byName.ContainsKey($key)) { $byName[$key] = New-Object System.Collections.Generic.List[string] }
+        $null = $byName[$key].Add([string](Get-OptimizerProperty -InputObject $entry -Name 'Id' -Default ''))
+    }
+
+    $colliding = @(@($byName.Keys) | Where-Object { $byName[$_].Count -gt 1 })
+    if ($colliding.Count -lt 1) { return $none }
+
+    $floor = $script:ReviewMinimumColumnWidth
+    foreach ($key in $colliding) {
+        $ids = [string[]] @($byName[$key].ToArray())
+        $longest = 0
+        foreach ($id in $ids) { if ($id.Length -gt $longest) { $longest = $id.Length } }
+
+        for ($width = $script:ReviewMinimumColumnWidth; $width -le $longest; $width++) {
+            $shown = @($ids | ForEach-Object { Get-ReviewTruncatedText -Text $_ -Width $width })
+            if (@($shown | Sort-Object -Unique).Count -eq $ids.Count) { break }
+        }
+        # The loop leaves $width one past $longest when nothing separated them,
+        # which is the identical-id case: fall back to the shared floor rather
+        # than widening a column that cannot help.
+        if ($width -le $longest -and $width -gt $floor) { $floor = $width }
+    }
+
+    $minimum = New-Object System.Collections.Generic.List[int]
+    for ($position = 0; $position -lt $columnIndex; $position++) { $null = $minimum.Add(0) }
+    $null = $minimum.Add($floor)
+
+    [pscustomobject]@{
+        Show         = $true
+        Index        = $columnIndex
+        Header       = 'FindingId'
+        MinimumWidth = [int[]] @($minimum.ToArray())
+    }
+}
+
 function New-ReviewRow {
     # One numbered row. Cell and Style are parallel; the Finding is carried whole
     # so a selection can hand back the object itself rather than a row index that
@@ -483,6 +640,7 @@ function New-ReviewSection {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]] $Headline,
         [Parameter()] [AllowEmptyCollection()] [string[]] $Note = @(),
         [Parameter()] [AllowEmptyCollection()] [string[]] $ColumnHeader = @(),
+        [Parameter()] [AllowEmptyCollection()] [AllowNull()] [int[]] $ColumnMinimumWidth = @(),
         [Parameter()] [AllowEmptyCollection()] [AllowNull()] [psobject[]] $Row = @(),
         [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $TotalLine,
         [Parameter()] [bool] $IsComplete = $true,
@@ -498,6 +656,9 @@ function New-ReviewSection {
         Headline          = [string[]] @($Headline)
         Note              = [string[]] @($Note)
         ColumnHeader      = [string[]] @($ColumnHeader)
+        # Per-column floors for the layout, by index. Empty for a section whose
+        # columns may all be squeezed to the shared minimum.
+        ColumnMinimumWidth = [int[]] @($ColumnMinimumWidth)
         Row               = [psobject[]] @($Row)
         # Only ever non-null where Row is non-empty. See Get-ReviewJunkSection:
         # the rule that a category total may not be printed without the per-row
@@ -608,6 +769,9 @@ function Get-ReviewStartupSection {
         $null = $note.Add(("All {0} that are still on were looked at and none of them is flagged." -f (Format-JunkCount -Count $enabled)))
     }
 
+    # Two rows that read the same are two rows a person cannot choose between.
+    $idColumn = Get-ReviewIdColumn -Finding $startupFindings
+
     $rows = New-Object System.Collections.Generic.List[psobject]
     $number = 0
     foreach ($finding in $startupFindings) {
@@ -617,19 +781,24 @@ function Get-ReviewStartupSection {
         $mechanismText = $(if ($script:ReviewMechanismText.ContainsKey($mechanismName)) { $script:ReviewMechanismText[$mechanismName] } else { $mechanismName })
 
         $null = $rows.Add((New-ReviewRow -Number $number -SectionKey $script:ReviewSectionStartup -Finding $finding -SafetyLabel $label `
-            -Cell ([string[]] @(
-                [string] $number
-                [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
-                $mechanismText
-                (Get-ReviewShortReason -Finding $finding)
-                $label
-            )) `
-            -Style ([string[]] @('Number', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label)))))
+            -Cell (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index `
+                -Insert ([string](Get-OptimizerProperty -InputObject $finding -Name 'Id' -Default '')) `
+                -Value ([string[]] @(
+                    [string] $number
+                    [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
+                    $mechanismText
+                    (Get-ReviewShortReason -Finding $finding)
+                    $label
+                ))) `
+            -Style (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert 'Muted' `
+                -Value ([string[]] @('Number', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label))))))
     }
 
     New-ReviewSection -Key $script:ReviewSectionStartup -Title 'Startup items' `
         -Headline ([string[]] $headline.ToArray()) -Note ([string[]] $note.ToArray()) `
-        -ColumnHeader ([string[]] @('#', 'What', 'Starts via', 'Why flagged', 'Safety')) `
+        -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
+            -Value ([string[]] @('#', 'What', 'Starts via', 'Why flagged', 'Safety'))) `
+        -ColumnMinimumWidth $idColumn.MinimumWidth `
         -Row ([psobject[]] @($rows.ToArray())) `
         -IsComplete $facts.IsComplete -IncompleteReason $facts.IncompleteReason `
         -RefusedSourceName $facts.RefusedSourceName `
@@ -685,23 +854,33 @@ function Get-ReviewInstalledAppSection {
             ($unusedFacts.RefusedSourceName -join ', ')))
     }
 
+    $installedFindings = @(@(@(Get-ReviewFinding -Scan $OemScan -Category 'OemBloatware') +
+        @(Get-ReviewFinding -Scan $UnusedScan -Category 'UnusedApp')) | Where-Object { $null -ne $_ })
+
+    # THIS IS THE SECTION THAT MADE THE COLUMN NECESSARY. Two rows read
+    # 'Microsoft Copilot' on this machine, with the same reason beside them: the
+    # Appx package and the Win32 install, which need two different removal calls.
+    $idColumn = Get-ReviewIdColumn -Finding $installedFindings
+
     $rows = New-Object System.Collections.Generic.List[psobject]
     $number = 0
-    foreach ($finding in @(@(Get-ReviewFinding -Scan $OemScan -Category 'OemBloatware') + @(Get-ReviewFinding -Scan $UnusedScan -Category 'UnusedApp'))) {
-        if ($null -eq $finding) { continue }
+    foreach ($finding in $installedFindings) {
         $number++
         $label = Get-ReviewSafetyLabel -Finding $finding
         $foundBy = $(if ([string](Get-OptimizerProperty -InputObject $finding -Name 'Category') -eq 'OemBloatware') { 'Curated list' } else { 'Usage signal' })
 
         $null = $rows.Add((New-ReviewRow -Number $number -SectionKey $script:ReviewSectionInstalled -Finding $finding -SafetyLabel $label `
-            -Cell ([string[]] @(
-                [string] $number
-                [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
-                $foundBy
-                (Get-ReviewShortReason -Finding $finding)
-                $label
-            )) `
-            -Style ([string[]] @('Number', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label)))))
+            -Cell (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index `
+                -Insert ([string](Get-OptimizerProperty -InputObject $finding -Name 'Id' -Default '')) `
+                -Value ([string[]] @(
+                    [string] $number
+                    [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
+                    $foundBy
+                    (Get-ReviewShortReason -Finding $finding)
+                    $label
+                ))) `
+            -Style (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert 'Muted' `
+                -Value ([string[]] @('Number', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label))))))
     }
 
     # TWO SCANS FEED THIS SECTION, so completeness is the AND of both and the
@@ -712,7 +891,9 @@ function Get-ReviewInstalledAppSection {
 
     New-ReviewSection -Key $script:ReviewSectionInstalled -Title 'Installed apps' `
         -Headline ([string[]] $headline.ToArray()) -Note ([string[]] $note.ToArray()) `
-        -ColumnHeader ([string[]] @('#', 'Application', 'Found by', 'Why flagged', 'Safety')) `
+        -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
+            -Value ([string[]] @('#', 'Application', 'Found by', 'Why flagged', 'Safety'))) `
+        -ColumnMinimumWidth $idColumn.MinimumWidth `
         -Row ([psobject[]] @($rows.ToArray())) `
         -IsComplete ($unusedFacts.IsComplete -and $oemFacts.IsComplete) `
         -IncompleteReason ($reasons -join ' ') `
@@ -753,6 +934,10 @@ function Get-ReviewJunkSection {
 
     $findings = @(Get-ReviewFinding -Scan $Scan -Category 'JunkFile')
 
+    # Q14's shape, in miniature: one Finding per browser means two profiles of
+    # the same browser would arrive as two rows with one name.
+    $idColumn = Get-ReviewIdColumn -Finding $findings
+
     $rows = New-Object System.Collections.Generic.List[psobject]
     $rowBytes = New-Object 'System.Collections.Generic.List[long]'
     $rowFiles = New-Object 'System.Collections.Generic.List[long]'
@@ -776,15 +961,18 @@ function Get-ReviewJunkSection {
         if ($floor) { $sizeText = "$sizeText or more" }
 
         $null = $rows.Add((New-ReviewRow -Number $number -SectionKey $script:ReviewSectionJunk -Finding $finding -SafetyLabel $label `
-            -Cell ([string[]] @(
-                [string] $number
-                [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
-                $sizeText
-                (Format-JunkCount -Count $files)
-                ("{0} days" -f $days)
-                $label
-            )) `
-            -Style ([string[]] @('Number', '', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label)))))
+            -Cell (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index `
+                -Insert ([string](Get-OptimizerProperty -InputObject $finding -Name 'Id' -Default '')) `
+                -Value ([string[]] @(
+                    [string] $number
+                    [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
+                    $sizeText
+                    (Format-JunkCount -Count $files)
+                    ("{0} days" -f $days)
+                    $label
+                ))) `
+            -Style (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert 'Muted' `
+                -Value ([string[]] @('Number', '', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label))))))
     }
 
     $headline = New-Object System.Collections.Generic.List[string]
@@ -827,7 +1015,9 @@ function Get-ReviewJunkSection {
 
     New-ReviewSection -Key $script:ReviewSectionJunk -Title 'Junk files' `
         -Headline ([string[]] $headline.ToArray()) -Note ([string[]] $note.ToArray()) `
-        -ColumnHeader ([string[]] @('#', 'Location', 'On disk now', 'Files', 'Older than', 'Safety')) `
+        -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
+            -Value ([string[]] @('#', 'Location', 'On disk now', 'Files', 'Older than', 'Safety'))) `
+        -ColumnMinimumWidth $idColumn.MinimumWidth `
         -Row ([psobject[]] @($rows.ToArray())) -TotalLine $totalLine `
         -IsComplete $facts.IsComplete -IncompleteReason $facts.IncompleteReason `
         -RefusedSourceName $facts.RefusedSourceName `
@@ -881,6 +1071,10 @@ function Get-ReviewServiceSection {
     $note = New-Object System.Collections.Generic.List[string]
     $null = $note.Add('This tool only ever changes a service startup type. It does not delete a service and it does not stop one that is running.')
 
+    # A service's display name is not its service name, and two services may
+    # share one. The id column is the service name.
+    $idColumn = Get-ReviewIdColumn -Finding $findings
+
     $rows = New-Object System.Collections.Generic.List[psobject]
     $number = 0
     foreach ($finding in $findings) {
@@ -899,19 +1093,23 @@ function Get-ReviewServiceSection {
         if ($item.Count -gt 0) { $state = [string](Get-OptimizerProperty -InputObject $item[0] -Name 'EnabledState' -Default 'Unknown') }
 
         $null = $rows.Add((New-ReviewRow -Number $number -SectionKey $script:ReviewSectionService -Finding $finding -SafetyLabel $label `
-            -Cell ([string[]] @(
-                [string] $number
-                [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
-                $state
-                (Get-ReviewShortReason -Finding $finding)
-                $label
-            )) `
-            -Style ([string[]] @('Number', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label)))))
+            -Cell (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $id `
+                -Value ([string[]] @(
+                    [string] $number
+                    [string](Get-OptimizerProperty -InputObject $finding -Name 'DisplayName' -Default '(unnamed)')
+                    $state
+                    (Get-ReviewShortReason -Finding $finding)
+                    $label
+                ))) `
+            -Style (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert 'Muted' `
+                -Value ([string[]] @('Number', '', 'Muted', 'Muted', (Get-ReviewSafetyStyle -Label $label))))))
     }
 
     New-ReviewSection -Key $script:ReviewSectionService -Title 'Services' `
         -Headline ([string[]] $headline.ToArray()) -Note ([string[]] $note.ToArray()) `
-        -ColumnHeader ([string[]] @('#', 'Service', 'State', 'Why flagged', 'Safety')) `
+        -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
+            -Value ([string[]] @('#', 'Service', 'State', 'Why flagged', 'Safety'))) `
+        -ColumnMinimumWidth $idColumn.MinimumWidth `
         -Row ([psobject[]] @($rows.ToArray())) `
         -IsComplete $facts.IsComplete -IncompleteReason $facts.IncompleteReason `
         -RefusedSourceName $facts.RefusedSourceName `
@@ -973,6 +1171,7 @@ function Format-ReviewSection {
     else {
         foreach ($line in @(Format-ReviewTable `
             -Header ([string[]] @(Get-OptimizerProperty -InputObject $Section -Name 'ColumnHeader' -Default @())) `
+            -MinimumWidth ([int[]] @(Get-OptimizerProperty -InputObject $Section -Name 'ColumnMinimumWidth' -Default @())) `
             -Row ([psobject[]] $rows) -Width $Width -Colour $Colour)) {
             $null = $lines.Add($line)
         }
@@ -1339,9 +1538,10 @@ function Get-ReviewConfirmation {
 
 function New-ReviewSelectionResult {
     # What Show-ReviewScreen hands back. Executed is present, is $false, and is
-    # not settable from anywhere in this file: the chunk that runs a plan is
-    # P4-C2, and until it exists this field is how a caller can tell that what it
-    # is holding is a decision and not a result.
+    # not settable from anywhere in this file: running a plan is
+    # Invoke-OptimizerExecutionPlan's job (P4-C2, Review\Execute.ps1), and this
+    # field is how a caller tells that what it is holding is a decision and not a
+    # result. It stays $false even when Confirmed is $true -- a yes is a decision.
     [CmdletBinding()]
     [OutputType([psobject])]
     param(
@@ -1393,9 +1593,16 @@ function Show-ReviewScreen {
         anything that is not yes is no.
 
         WHAT IT DOES NOT DO. It does not call Invoke-RemovalPlan, it has no
-        switch that would, and it does not write to the action ledger. Wiring a
-        confirmed selection to the executor is chunk P4-C2. The object handed
-        back carries Executed = $false to say so in the data as well as here.
+        switch that would, and it does not write to the action ledger. The object
+        handed back carries Executed = $false to say so in the data as well as
+        here, and it says it whatever Confirmed says.
+
+        That did not change when P4-C2 shipped, and the reason is worth stating:
+        a screen that executed on 'yes' would mean every test that drives this
+        function to the end would be a test that changes the machine. Carrying
+        out a confirmed selection is New-OptimizerExecutionPlan piped into
+        Invoke-OptimizerExecutionPlan -- two calls a caller makes on purpose,
+        in Review\Execute.ps1, and nothing in this file reaches them.
 
     .PARAMETER Screen
         A screen from Get-ReviewScreen. Built here if not supplied, with a line
@@ -1537,12 +1744,35 @@ function Show-ReviewScreen {
         & $write ''
     }
 
-    $typed = [string](& $Reader ("Go ahead with these $($plans.Count)? Type 'yes' to say so -- anything else stops"))
+    # ELEVATION IS REPORTED HERE AND ASKED FOR NOWHERE. Where a plan needs
+    # administrator rights and this process has none, the executor refuses it
+    # with a reason -- so the honest thing to say before the question is that it
+    # will be refused, and to say it while the person can still do something
+    # about it. Relaunching elevated is P5-C1's UAC shim; this build does not
+    # prompt for it, and a line that implied it could would be a promise this
+    # code cannot keep.
+    #
+    # Read off the plans rather than off any one step: RequiresElevation on a
+    # plan is already the OR of its steps (Get-RemovalPlan), and re-deriving it
+    # here would be a second copy of a rule that has one.
+    $needsElevation = @($plans | Where-Object { [bool](Get-OptimizerProperty -InputObject $_ -Name 'RequiresElevation' -Default $false) })
+    if ($needsElevation.Count -gt 0 -and -not (Test-IsElevated)) {
+        & $write (Add-ReviewStyle -Colour $colour -Name 'Partial' -Text '  Elevation required to execute these changes.')
+        & $write ''
+    }
+
+    # THE TWO TOKENS ARE DELIBERATELY DIFFERENT. 'a' is a perfectly good answer
+    # to each of the section prompts above -- it means "all of them" -- and it is
+    # not 'yes', so answering this one with the muscle memory of the previous
+    # three stops the run silently. The fail-safe is right and the wording was
+    # not, so this prompt names 'a' as a stop rather than leaving a person to
+    # find out. Measured: the P4-C1 survey run ended exactly this way.
+    $typed = [string](& $Reader ("Go ahead with these $($plans.Count)? Type 'yes' to confirm -- anything else, 'a' included, stops"))
     $confirmed = Get-ReviewConfirmation -InputText $typed
 
     if ($confirmed) {
         & $write ''
-        & $write 'Recorded as a yes. Nothing has been done: this build collects the decision and stops there.'
+        & $write 'Recorded as a yes. Nothing on this PC has been changed: this screen collects the decision and stops there. Invoke-OptimizerExecutionPlan is what carries it out.'
     }
     else {
         & $write ''

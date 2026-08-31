@@ -1416,11 +1416,14 @@ Describe 'The two new exports' {
         $manifest = Import-PowerShellDataFile -LiteralPath $script:ManifestPath
         $exported = @(Get-Command -Module Win11Optimizer.Engine | ForEach-Object { $_.Name })
         @($manifest.FunctionsToExport).Count | Should -Be $exported.Count
-        # 34 before this chunk (P3-C2's report), plus these two. The running
-        # total moved to 41 when P4-C1 added the review screen's five; the claim
-        # this It makes -- that THIS chunk added exactly two -- is the line below
-        # it, and it is unchanged.
-        $exported.Count | Should -Be 41
+        # THE RUNNING TOTAL IS READ FROM THE .psd1, NOT WRITTEN HERE. It was 34
+        # before this chunk (P3-C2's report), 36 after it, 41 when P4-C1 added
+        # the review screen's five and 43 when P4-C2 added its two -- and this
+        # file and tests\ActionLog.Tests.ps1 were each being hand-edited every
+        # chunk to keep a number neither of them is about. The claim this It
+        # actually makes -- that THIS chunk added exactly two -- is the line
+        # below it, and that one does not move.
+        $exported.Count | Should -Be @($manifest.FunctionsToExport).Count
         @($exported | Where-Object { $script:NewExport -contains $_ }).Count | Should -Be 2
     }
 
