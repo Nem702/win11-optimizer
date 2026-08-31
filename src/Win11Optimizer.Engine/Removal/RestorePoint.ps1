@@ -65,6 +65,36 @@ $script:RestorePointDefaultFrequencyMinutes = 1440
 
 #region Internal
 
+function ConvertTo-OptimizerRestorePointUtcText {
+    <#
+        A UTC timestamp as an ISO-8601 string, or $null.
+
+        JSON HAS NO DATE TYPE, and the two shells this project runs on disagree
+        about what to write instead: Windows PowerShell 5.1's ConvertTo-Json
+        emits /Date(ms)/ for a [datetime] and PowerShell 7 emits ISO-8601. Every
+        other timestamp in this project is already a string for that reason --
+        the run log's Timestamp, the plan's VerifiedUtc, the ledger's
+        TimestampUtc -- and this result object is where it was missed.
+
+        The normalising itself is Dispatcher.ps1's ConvertTo-RemovalUtcText,
+        called rather than copied. This wrapper exists for ONE difference, and it
+        is a real one: that function returns '' for $null, which is right for a
+        preview line and wrong here. On this object $null means "there was no
+        previous restore point", and '' would read as "there was one and its time
+        was blank" -- the same tri-state argument the untyped $reason local
+        further down this file is written around. So $null stays $null, and
+        everything else goes through the one implementation.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Value
+    )
+
+    if ($null -eq $Value) { return $null }
+    ConvertTo-RemovalUtcText -Value $Value
+}
+
 function New-OptimizerRestorePointResult {
     # Every field on every result, whatever the state -- Set-StrictMode -Version
     # Latest is on for everything that will read this.
@@ -93,8 +123,15 @@ function New-OptimizerRestorePointResult {
         State                   = $State
         Reason                  = $Reason
         SequenceNumber          = $SequenceNumber
-        CreatedUtc              = $CreatedUtc
-        PreviousRestorePointUtc = $PreviousRestorePointUtc
+        # Both timestamps are NORMALISED HERE rather than at the call sites, and
+        # that placement is the fix. This object reaches the append-only ledger
+        # as an executor Note payload, so a raw [datetime] on it means the same
+        # code writes /Date(1787880163160)/ under 5.1 and an ISO-8601 string
+        # under 7 -- different bytes in a log that is never rewritten, decided by
+        # which shell happened to run. Normalising in the factory means no future
+        # call site can reintroduce it by passing the [datetime] it is holding.
+        CreatedUtc              = (ConvertTo-OptimizerRestorePointUtcText -Value $CreatedUtc)
+        PreviousRestorePointUtc = (ConvertTo-OptimizerRestorePointUtcText -Value $PreviousRestorePointUtc)
         ThrottleMinutes         = $ThrottleMinutes
         MinutesSinceLast        = $MinutesSinceLast
         IsElevated              = $IsElevated

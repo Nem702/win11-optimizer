@@ -1969,6 +1969,20 @@ function Add-RemovalServiceRoute {
     $delayed = Get-RemovalRegistryValue -Path $keyPath -Name 'DelayedAutostart'
     $isDelayed = ($null -ne $delayed -and ([int] $delayed) -ne 0)
 
+    # WHETHER THE VALUE WAS THERE AT ALL, separately from what it said. This is
+    # the same distinction StartupApproved's ValueExisted already draws, and it is
+    # needed for the same reason: PreviousDelayedAutostart is a DERIVED boolean,
+    # so its $false means either "the value was present and 0" or "the key had no
+    # such value", and those two need different undos -- write 0 back, or write
+    # nothing and leave the key as Windows had it.
+    #
+    # Captured now rather than with the executor chunk that will use it because
+    # THE LEDGER IS PERMANENT. A service action recorded today without this flag
+    # can never gain it: the record is written once, appended to a file that is
+    # never rewritten, and a later build reading it back has no way to recover
+    # what the key looked like at the moment of the change.
+    $delayedExisted = ($null -ne $delayed)
+
     $previousName = $script:RemovalServiceStartName[$start]
     if ([string]::IsNullOrWhiteSpace($previousName)) { $previousName = "Unknown (Start = $start)" }
     if ($start -eq $script:RemovalServiceStartAutomatic -and $isDelayed) { $previousName = 'Automatic (Delayed Start)' }
@@ -1979,7 +1993,15 @@ function Add-RemovalServiceRoute {
         KeyPath                  = $keyPath
         PreviousStartValue       = $start
         PreviousStartupType      = $previousName
+        # ADDITIVE. PreviousDelayedAutostart keeps its exact current meaning and
+        # its exact current value, because Executor.ps1 reads it and this chunk
+        # does not touch the executor: its rule -- restore the value only where
+        # the record says it was switched ON -- stays as it is. The new field
+        # sits beside it so a later chunk can tell the two $false cases apart
+        # without the ledger having to be re-read against a machine that has
+        # since changed.
         PreviousDelayedAutostart = $isDelayed
+        DelayedAutostartExisted  = $delayedExisted
         Note                     = "To undo: set Start back to $start$(if ($isDelayed) { ' and DelayedAutostart back to 1' } else { '' }). Nothing else about the service is changed by this plan."
     }
 

@@ -67,6 +67,22 @@
         'Get-OptimizerActionLog'
         'Get-OptimizerRunReceipt'
         'New-OptimizerRestorePoint'
+
+        # P3-C3 - the executor (Removal/Executor.ps1). The first code here that
+        # changes the machine on purpose, and it changes one thing: the startup
+        # type of one service. Every other route is refused, with a reason.
+        'Invoke-RemovalPlan'
+        'Undo-RemovalAction'
+
+        # P4-C1 - the console review screen (Review/Screen.ps1). Deciding and
+        # printing kept apart: Get-ReviewScreen works out what the four sections
+        # say, Format-ReviewScreen turns that into lines, and Show-ReviewScreen
+        # drives the prompts. It collects a selection and runs nothing.
+        'Get-ReviewScreen'
+        'Format-ReviewScreen'
+        'Get-ReviewSelection'
+        'Get-ReviewConfirmation'
+        'Show-ReviewScreen'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

@@ -448,7 +448,7 @@ Describe 'Nothing in this chunk can change the state of the machine' {
         }
     }
 
-    It 'defines no Invoke-* function, and exports none' {
+    It 'defines no Invoke-* function, and the only executor in the module is P3-C3''s' {
         foreach ($path in $script:NewSource) {
             foreach ($function in @($script:Ast[$path].FindAll({
                 param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
@@ -456,7 +456,21 @@ Describe 'Nothing in this chunk can change the state of the machine' {
                 $function.Name | Should -Not -Match '^Invoke-' -Because 'this chunk is the ledger, not the executor'
             }
         }
-        @(Get-Command -Module Win11Optimizer.Engine | Where-Object { $_.Name -like 'Invoke-*Remov*' }).Count | Should -Be 0
+
+        # AMENDED BY P3-C3, and the amendment is argued in
+        # docs\handoff\11-executor.report.md. The original line asserted the
+        # module exported NO Invoke-*Remov* at all, which was a true statement
+        # about a build with no executor in it and became false the moment one
+        # shipped. Deleting it would give the two files above a weaker guard than
+        # they had; keeping the count at zero would forbid the chunk that follows.
+        # So it now names what may exist and where it must live -- which is a
+        # stronger claim than "there is none", because a second executor, or one
+        # smuggled into either of the two files this Describe is about, still
+        # fails it.
+        $executor = @(Get-Command -Module Win11Optimizer.Engine | Where-Object { $_.Name -like 'Invoke-*Remov*' })
+        $executor.Count | Should -Be 1
+        $executor[0].Name | Should -Be 'Invoke-RemovalPlan'
+        (Split-Path -Path $executor[0].ScriptBlock.File -Leaf) | Should -Be 'Executor.ps1'
     }
 
     It 'opens a file for writing in exactly one place, in append mode only' {
@@ -1686,7 +1700,11 @@ Describe 'The five new functions, and only those five' {
         $exported = @(Get-Command -Module Win11Optimizer.Engine | ForEach-Object { $_.Name })
         @($manifest.FunctionsToExport).Count | Should -Be $exported.Count
         # 29 before this chunk (P3-C1a's report, section 13), plus these five.
-        $exported.Count | Should -Be 34
+        # The total moved to 36 when P3-C3 added Invoke-RemovalPlan and
+        # Undo-RemovalAction, and to 41 when P4-C1 added the review screen's
+        # five; the claim this It makes -- that THIS chunk added exactly five --
+        # is the line below, and it is unchanged.
+        $exported.Count | Should -Be 41
         @($exported | Where-Object { $script:NewExport -contains $_ }).Count | Should -Be 5
     }
 
@@ -1703,7 +1721,11 @@ Describe 'The five new functions, and only those five' {
 Write-Output "exported=`$(`$module.ExportedFunctions.Count) undefined=`$(@(`$missing).Count)"
 "@
         $output = (& $script:ShellPath -NoProfile -File $child) -join ' '
-        $output | Should -Match 'exported=34'
+        # 34 when this chunk shipped; 36 after P3-C3 added its two; 41 after
+        # P4-C1 added the review screen's five. The assertion that matters is
+        # undefined=0 -- a name in FunctionsToExport with no function behind it
+        # is invisible to callers with no error anywhere.
+        $output | Should -Match 'exported=41'
         $output | Should -Match 'undefined=0'
     }
 }

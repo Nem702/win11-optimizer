@@ -128,6 +128,55 @@ $script:ActionLogRawLineLimit = 512
 
 #region Internal: the append primitive
 
+function Test-OptimizerActionLogPermanentFailure {
+    <#
+        Is this append failure one that waiting cannot clear?
+
+        $true for a folder or file that is not there. $false for everything else,
+        which in practice means the sharing violation the retry loop exists for.
+
+        DISCRIMINATED ON THE EXCEPTION OBJECT, NOT BY A SECOND TYPED CATCH
+        CLAUSE, and that is a measurement rather than a preference.
+        DirectoryNotFoundException and FileNotFoundException both derive from
+        IOException, so the obvious shape is to catch them ahead of it. On
+        WINDOWS POWERSHELL 5.1 -- this project's floor -- that does not work in a
+        retry loop:
+
+            attempt   1  clause=IOException    chain=MethodInvocationException -> System.IO.IOException
+            attempt   2  clause=IOException    chain=MethodInvocationException -> System.IO.IOException
+            ...
+            attempt  20  clause=FileNotFound   chain=MethodInvocationException -> System.IO.IOException
+            attempt  21  clause=FileNotFound   chain=MethodInvocationException -> System.IO.IOException
+
+        Measured 2026-08-28 on 5.1.26100.9168, reproducible, flipping somewhere
+        between attempts 17 and 27. THE EXCEPTION DOES NOT CHANGE -- its chain is
+        MethodInvocationException -> System.IO.IOException on every one of those
+        attempts, with the same "because it is being used by another process"
+        message. What changes is which clause the engine picks for it. PowerShell
+        7 never does this.
+
+        So a loop that decides "permanent or transient" by which typed clause
+        caught it CHANGES ITS MIND PARTWAY THROUGH, and a sharing violation --
+        the one failure that does clear on its own -- gets reported as a missing
+        folder, on the shell this project targets first. The '-is' test below is
+        against the real object and cannot drift.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $ErrorRecord
+    )
+
+    if ($null -eq $ErrorRecord) { return $false }
+
+    # PowerShell wraps an exception thrown by a .NET METHOD in a
+    # MethodInvocationException, so the useful type is one level down.
+    $inner = Get-OptimizerInnerException -Exception $ErrorRecord.Exception
+    if ($null -eq $inner) { return $false }
+
+    ($inner -is [System.IO.DirectoryNotFoundException]) -or ($inner -is [System.IO.FileNotFoundException])
+}
+
 function Add-OptimizerActionLine {
     <#
         Appends whole lines to a UTF-8 file and FLUSHES THEM TO DISK before
@@ -146,7 +195,9 @@ function Add-OptimizerActionLine {
         which is precisely the state this whole file exists to make impossible.
 
         THROWS if it cannot write. A caller that cannot record what it is about to
-        do must not do it.
+        do must not do it. It throws IMMEDIATELY for a path that is not there --
+        see Test-OptimizerActionLogPermanentFailure -- and retries only the one
+        failure that can clear on its own.
     #>
     [CmdletBinding()]
     param(
@@ -167,6 +218,7 @@ function Add-OptimizerActionLine {
     $bytes    = $encoding.GetBytes($payload)
 
     $lastError = $null
+    $isPermanent = $false
     for ($attempt = 1; $attempt -le $script:ActionLogAppendAttemptLimit; $attempt++) {
         $stream = $null
         try {
@@ -180,13 +232,35 @@ function Add-OptimizerActionLine {
             return
         }
         catch [System.IO.IOException] {
-            # A sharing violation from another writer. Everything else -- a bad
-            # path, a denied ACL, a full disk -- is not retried, because retrying
-            # it only delays the throw.
-            $lastError = $_
+            # ONE typed clause, and the transient/permanent question answered by
+            # LOOKING AT THE EXCEPTION rather than by which clause caught it.
+            # That is not a style preference -- see the measurement in
+            # Test-OptimizerActionLogPermanentFailure. Everything that is not an
+            # IOException at all -- a denied ACL, a bad argument -- is still not
+            # caught here and still propagates, because retrying it would only
+            # delay the throw.
+            $lastError   = $_
+            $isPermanent = Test-OptimizerActionLogPermanentFailure -ErrorRecord $_
         }
         finally {
             if ($null -ne $stream) { $stream.Dispose() }
+        }
+
+        if ($isPermanent) {
+            # A missing folder is not a condition that clears by waiting; a
+            # sharing violation is, and only that one is worth the retry budget.
+            # Before this, a log root that cannot exist -- a disconnected share,
+            # an unmapped drive letter, a packaged install pointed somewhere
+            # wrong -- was retried 200 times at ~16 ms each: measured at 3.30 s
+            # on 2026-08-28 against 'Z:\nope\deeper', now 0.02 s.
+            #
+            # It always FAILED CORRECTLY. This is about the delay only. An
+            # executor working through a batch paid it once per row, and the one
+            # thing a caller can do about it -- stop, because an action that
+            # cannot be recorded must not be attempted -- is the same answer 3.2
+            # seconds earlier.
+            $inner = Get-OptimizerInnerException -Exception $lastError.Exception
+            throw "The action ledger at '$Path' could not be written -- the folder it is in does not exist and waiting will not create one -- so nothing about this action has been recorded and it must not be attempted: $($inner.GetType().Name): $($inner.Message)"
         }
 
         Start-Sleep -Milliseconds ($script:ActionLogAppendDelayFloorMs + (Get-Random -Minimum 0 -Maximum $script:ActionLogAppendDelayJitterMs))

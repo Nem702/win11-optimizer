@@ -617,7 +617,7 @@ function Get-OptimizerLogPath {
 
 #region The source-folder loader
 
-# The module's source is split across three folders, dot-sourced in this order:
+# The module's source is split across four folders, dot-sourced in this order:
 #
 #   Shared\     plumbing more than one consumer needs -- the registry uninstall
 #               walk, the installed-app record, the match-pattern dialect, the
@@ -628,6 +628,10 @@ function Get-OptimizerLogPath {
 #   Removal\    the removal dispatcher (chunk P3-C1). AFTER Detectors\, because
 #               it reads their module-scope constants -- the Run-key view table
 #               and the StartupApproved store paths -- rather than restating them.
+#   Review\     the console review screen (chunk P4-C1). LAST, because it is the
+#               only consumer of all three: it renders what the detectors found,
+#               prints the dispatcher's own preview text, and reads the ledger's
+#               receipt. Nothing depends on it.
 #
 # Every one of them is REQUIRED. This used to be
 #
@@ -644,8 +648,8 @@ function Get-OptimizerLogPath {
 # raises no error EVEN WITH -ErrorAction Stop. Only the .NET call distinguishes
 # "empty" from "not allowed to look", by throwing.
 #
-# The three folders are dot-sourced by three explicit statements rather than by a
-# loop over a list. The ORDER is the load-bearing thing here, and three lines say
+# The folders are dot-sourced by one explicit statement each rather than by a
+# loop over a list. The ORDER is the load-bearing thing here, and four lines say
 # it where a loop would hide it behind a variable.
 
 function Get-OptimizerSourceFile {
@@ -707,6 +711,10 @@ foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSSc
     . $optimizerSourceFile
 }
 
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Review') -Name 'Review')) {
+    . $optimizerSourceFile
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -761,7 +769,25 @@ Export-ModuleMember -Function @(
     'Get-OptimizerRunReceipt'
 
     # P3-C2 - the best-effort System Restore checkpoint (Removal/RestorePoint.ps1).
-    # The ONE call in this project that changes the state of the machine, kept in
-    # a file of its own so that fact can be audited in one place.
+    # An additive call that changes the state of the machine, kept in a file of
+    # its own so that fact can be audited in one place.
     'New-OptimizerRestorePoint'
+
+    # P3-C3 - the executor (Removal/Executor.ps1). The first code in this project
+    # that changes the machine on purpose. It performs ONE route --
+    # ServiceStartupType, the only reversible one -- and refuses every other one,
+    # with a reason. Its entire write surface is two registry value names on one
+    # service key.
+    'Invoke-RemovalPlan'
+    'Undo-RemovalAction'
+
+    # P4-C1 - the console review screen (Review/Screen.ps1). Printing only: it
+    # reads scan results, returns strings, collects a selection and stops.
+    # NOTHING HERE CALLS Invoke-RemovalPlan; wiring a confirmed selection to the
+    # executor is P4-C2.
+    'Get-ReviewScreen'
+    'Format-ReviewScreen'
+    'Get-ReviewSelection'
+    'Get-ReviewConfirmation'
+    'Show-ReviewScreen'
 )
