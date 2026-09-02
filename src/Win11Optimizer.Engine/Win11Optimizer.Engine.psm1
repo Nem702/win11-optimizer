@@ -617,23 +617,31 @@ function Get-OptimizerLogPath {
 
 #region The source-folder loader
 
-# The module's source is split across four folders, dot-sourced in this order:
+# The module's source is split across six folders, dot-sourced in this order:
 #
 #   Shared\     plumbing more than one consumer needs -- the registry uninstall
 #               walk, the installed-app record, the match-pattern dialect, the
 #               scan-result wrapper, the path probes and the protected-path gate.
 #               FIRST, because detector and removal files reference its
 #               module-scope constants at dot-source time.
+#   Support\    process-level plumbing that is about running this tool rather
+#               than about anything it inspects: the UAC relaunch (chunk P5-C1).
+#               Early, because it depends on nothing below it -- it knows how to
+#               start a PowerShell host and nothing at all about Findings.
 #   Detectors\  one file per sweep category (chunks P2-C1..C4).
 #   Removal\    the removal dispatcher (chunk P3-C1). AFTER Detectors\, because
 #               it reads their module-scope constants -- the Run-key view table
 #               and the StartupApproved store paths -- rather than restating them.
 #   Review\     the console review screen (chunk P4-C1) and the execution bridge
-#               (chunk P4-C2). LAST, because it is the only consumer of all
-#               three: it renders what the detectors found, prints the
-#               dispatcher's own preview text, reads the ledger's receipt and --
-#               from Execute.ps1 and nowhere else in this folder -- hands a
-#               confirmed set of plans to the executor. Nothing depends on it.
+#               (chunk P4-C2). It is the consumer of all three above it: it
+#               renders what the detectors found, prints the dispatcher's own
+#               preview text, reads the ledger's receipt and -- from Execute.ps1
+#               and nowhere else in that folder -- hands a confirmed set of plans
+#               to the executor.
+#   App\        the menu (chunk P5-C1). LAST, because it is a switchboard over
+#               every one of the others: it calls the review screen, the
+#               execution bridge, the ledger's receipt, the executor's undo, the
+#               restore point and the relaunch. Nothing depends on it.
 #
 # Every one of them is REQUIRED. This used to be
 #
@@ -651,8 +659,15 @@ function Get-OptimizerLogPath {
 # "empty" from "not allowed to look", by throwing.
 #
 # The folders are dot-sourced by one explicit statement each rather than by a
-# loop over a list. The ORDER is the load-bearing thing here, and four lines say
+# loop over a list. The ORDER is the load-bearing thing here, and six lines say
 # it where a loop would hide it behind a variable.
+#
+# ONE FILE IS EXCLUDED, and only one: App\Entry.ps1. It is a LAUNCHER rather
+# than a source file -- its two statements are "import this module" and "run the
+# menu" -- so dot-sourcing it during the import would re-enter Import-Module and
+# then open the menu, from inside the import of the module the menu lives in.
+# The exclusion is BY NAME rather than by a pattern, because a pattern is a rule
+# a future file can accidentally match; a name is a decision about one file.
 
 function Get-OptimizerSourceFile {
     <#
@@ -677,12 +692,23 @@ function Get-OptimizerSourceFile {
 
     .PARAMETER Name
         The folder's short name, for the error message.
+
+    .PARAMETER Exclude
+        File names -- leaf names, not paths -- to leave out. Used for exactly one
+        file, App\Entry.ps1, and the block comment above says why.
+
+        A name in this list that is NOT in the folder THROWS, rather than being
+        ignored. An exclusion that has stopped matching anything is the same
+        failure this whole function exists to prevent, one level up: it would
+        mean a file that must not be dot-sourced has been renamed, and the loader
+        would quietly start dot-sourcing it.
     #>
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Path,
-        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Name
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Name,
+        [Parameter()] [AllowEmptyCollection()] [string[]] $Exclude = @()
     )
 
     $files = $null
@@ -698,10 +724,24 @@ function Get-OptimizerSourceFile {
         throw "Win11Optimizer.Engine cannot be imported: the required '$Name' source folder at '$Path' could not be read. $($inner.GetType().Name): $($inner.Message)"
     }
 
-    [string[]] @(@($files) | Sort-Object -CaseSensitive)
+    $present = [string[]] @(@($files) | ForEach-Object { [System.IO.Path]::GetFileName($_) })
+
+    foreach ($excluded in @($Exclude)) {
+        if ($present -notcontains $excluded) {
+            throw "Win11Optimizer.Engine cannot be imported: the '$Name' source folder at '$Path' was told to exclude '$excluded', and no such file is there. An exclusion that matches nothing means the file it was protecting has moved, and the loader would dot-source it."
+        }
+    }
+
+    [string[]] @(@($files) |
+        Where-Object { @($Exclude) -notcontains [System.IO.Path]::GetFileName($_) } |
+        Sort-Object -CaseSensitive)
 }
 
 foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Shared') -Name 'Shared')) {
+    . $optimizerSourceFile
+}
+
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Support') -Name 'Support')) {
     . $optimizerSourceFile
 }
 
@@ -714,6 +754,13 @@ foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSSc
 }
 
 foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'Review') -Name 'Review')) {
+    . $optimizerSourceFile
+}
+
+# Entry.ps1 is EXCLUDED -- see the block comment above. It is the launcher, not
+# a source file, and dot-sourcing it here would re-enter Import-Module and open
+# the menu from inside the module's own import.
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'App') -Name 'App' -Exclude 'Entry.ps1')) {
     . $optimizerSourceFile
 }
 
@@ -800,4 +847,13 @@ Export-ModuleMember -Function @(
     # Undo-RemovalAction -- which are its entire write surface.
     'New-OptimizerExecutionPlan'
     'Invoke-OptimizerExecutionPlan'
+
+    # P5-C1 - the entry point (App/Menu.ps1) and the UAC relaunch
+    # (Support/Elevation.ps1). The menu is a switchboard: every choice on it is
+    # a call to one of the exports above, and it adds no mechanism of its own.
+    # Invoke-OptimizerElevated starts a second, elevated process running
+    # App/Entry.ps1 -- which is the entry point, is NOT exported, and is the one
+    # .ps1 under this folder the loader deliberately does not dot-source.
+    'Invoke-OptimizerMenu'
+    'Invoke-OptimizerElevated'
 )

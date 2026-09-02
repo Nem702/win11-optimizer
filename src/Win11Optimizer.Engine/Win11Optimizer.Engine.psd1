@@ -91,6 +91,14 @@
         # it by calling Invoke-RemovalPlan and nothing else.
         'New-OptimizerExecutionPlan'
         'Invoke-OptimizerExecutionPlan'
+
+        # P5-C1 - the entry point (App/Menu.ps1) and the UAC relaunch
+        # (Support/Elevation.ps1). Invoke-OptimizerMenu is a switchboard over
+        # every export above it and adds no mechanism of its own;
+        # Invoke-OptimizerElevated starts a second, elevated process running
+        # App/Entry.ps1, which is the launcher and is not part of this surface.
+        'Invoke-OptimizerMenu'
+        'Invoke-OptimizerElevated'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()
