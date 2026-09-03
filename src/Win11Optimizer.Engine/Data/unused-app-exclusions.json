@@ -204,7 +204,8 @@
           "ESET Internet Security",
           "ESET Security",
           "Windows Defender*",
-          "Microsoft Defender*"
+          "Microsoft Defender*",
+          "SecurityHealth"
         ],
         "appxPackageName": [
           "Microsoft.SecHealthUI",
@@ -214,7 +215,7 @@
           "AVASTSoftware.*"
         ]
       },
-      "note": "Malwarebytes.AntiMalware was measured on this project's hardware as a Store package, which the registryDisplayName patterns alone would have missed."
+      "note": "Malwarebytes.AntiMalware was measured on this project's hardware as a Store package, which the registryDisplayName patterns alone would have missed. 'SecurityHealth' is EXACT, not a prefix: it is the literal HKLM Run value name Windows Security uses for SecurityHealthSystray.exe, measured on this project's hardware, and it is the name the startup route's display-name gate is handed. None of 'Windows Defender*', 'Microsoft Defender*' or the Appx 'Microsoft.SecHealthUI' matches that token, so before it was listed the one example the gate was built for went straight past it. The six-character literal-prefix floor is about wildcards and would have allowed 'SecurityHealth*'; there is simply no reason to reach past the one value that exists, so this entry claims exactly it."
     },
     {
       "id": "anti-cheat",

@@ -106,6 +106,21 @@ BeforeAll {
 
     # ---- fixtures -----------------------------------------------------------
 
+    # An empty file, used as standard input for every child process this suite
+    # starts. -NoNewWindow WITHOUT it leaves the child sharing the operator's
+    # console for input: the child's menu text goes into the redirected output
+    # file, and its Read-Host prompt goes to a terminal that is showing nothing,
+    # so the suite blocks forever on an invisible question. An empty file is at
+    # end of file from the first read, Read-Host returns $null there -- measured
+    # on 5.1 and 7.6.5, and the reason Invoke-OptimizerMenu has an EndOfInput
+    # ending at all -- and the child exits after one menu.
+    #
+    # This is not belt and braces. It bit for real, elevated, on 2026-09-01: an
+    # elevated run reaches 'Receipt', which SUCCEEDS, so the menu loops round and
+    # asks for the next choice instead of ending at a refusal.
+    $script:EmptyStdIn = Join-Path $script:Scratch 'empty-stdin.txt'
+    [System.IO.File]::WriteAllText($script:EmptyStdIn, '')
+
     $script:LedgerCounter = 0
     function New-LedgerPath {
         $script:LedgerCounter++
@@ -815,7 +830,7 @@ Write-Host 'SURVIVED'
         $out = Join-Path $script:Scratch ("pipestop-" + [guid]::NewGuid().ToString('N') + '.txt')
         $shell = InModuleScope Win11Optimizer.Engine { Get-OptimizerHostExecutable }
         $null = Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-File', ('"' + $probe + '"')) `
-            -NoNewWindow -PassThru -Wait -RedirectStandardOutput $out
+            -NoNewWindow -PassThru -Wait -RedirectStandardOutput $out -RedirectStandardInput $script:EmptyStdIn
 
         $text = [System.IO.File]::ReadAllText($out)
         $text | Should -Match 'REACHED'     -Because 'the probe really ran'
@@ -1113,9 +1128,14 @@ Describe 'P5-C1 the elevated command line' {
             Get-OptimizerElevationCommandLine -EntryScript $Entry -Choice $Choice
         }
 
+        # Standard input is redirected from an empty file as well as standard
+        # output. Without it this child inherits the operator's console for
+        # input: whatever the choice does, the menu loops round afterwards and
+        # prompts -- and the prompt is not on screen, because standard output is
+        # in $outputPath. See $script:EmptyStdIn.
         $outputPath = Join-Path $script:Scratch ("roundtrip-" + [guid]::NewGuid().ToString('N') + '.txt')
         $process = Start-Process -FilePath $hostExe -ArgumentList $built -NoNewWindow -PassThru -Wait `
-            -RedirectStandardOutput $outputPath
+            -RedirectStandardOutput $outputPath -RedirectStandardInput $script:EmptyStdIn
         $process.ExitCode | Should -Be 0
 
         $text = [System.IO.File]::ReadAllText($outputPath)
@@ -1130,6 +1150,57 @@ Describe 'P5-C1 the elevated command line' {
         }
         # And it came back to the menu rather than exiting at the choice.
         $text | Should -Match 'win11-optimizer'
+    }
+}
+
+Describe 'P5-C3 change 6: this suite never waits for a keystroke' {
+
+    It 'redirects standard input on every child process it starts, not just standard output' {
+        # THE BUG THIS EXISTS TO STOP COMING BACK. -NoNewWindow with
+        # -RedirectStandardOutput and nothing for input leaves the child sharing
+        # the operator's console for input while its own prompt goes into a file.
+        # Invoke-OptimizerMenu then sits on Read-Host forever, on a question
+        # nobody can see, and a suite that hangs is indistinguishable from a
+        # suite that is being slow. Observed elevated on 2026-09-01; measured
+        # again while fixing it, where a child with an OPEN and silent stdin was
+        # still running after 25 seconds and the same child with stdin at end of
+        # file exited immediately with 0.
+        #
+        # Asserted over THIS file's own AST rather than by inspection, because
+        # the next Start-Process somebody adds here is the one that will forget.
+        $self = Get-ParsedSource -Path $PSCommandPath
+
+        $started = @($self.Ast.FindAll({
+            param($node) $node -is [System.Management.Automation.Language.CommandAst]
+        }, $true) | Where-Object {
+            $element = $_.CommandElements[0]
+            ($element -is [System.Management.Automation.Language.StringConstantExpressionAst]) -and
+            ($element.Value -eq 'Start-Process')
+        })
+
+        # Only the ones that really launch something: the Mock Start-Process
+        # bodies below are CommandAsts of their own and never start a process.
+        $launching = @($started | Where-Object {
+            @($_.CommandElements | Where-Object {
+                $_ -is [System.Management.Automation.Language.CommandParameterAst] -and
+                $_.ParameterName -eq 'RedirectStandardOutput'
+            }).Count -gt 0
+        })
+
+        $launching.Count | Should -BeGreaterOrEqual 2 -Because 'this suite starts two real child processes'
+
+        foreach ($call in $launching) {
+            $names = @($call.CommandElements |
+                Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
+                ForEach-Object { $_.ParameterName })
+            $names | Should -Contain 'RedirectStandardInput' `
+                -Because "the Start-Process at line $($call.Extent.StartLineNumber) redirects output, so it must redirect input too or it waits on the operator's console"
+        }
+    }
+
+    It 'redirects it from a file that is empty, which is what makes Read-Host return $null' {
+        [System.IO.File]::Exists($script:EmptyStdIn) | Should -BeTrue
+        (Get-Item -LiteralPath $script:EmptyStdIn).Length | Should -Be 0
     }
 }
 

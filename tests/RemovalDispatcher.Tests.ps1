@@ -40,6 +40,10 @@ BeforeAll {
 
     Import-Module $script:ManifestPath -Force -ErrorAction Stop
 
+    # The one forbidden-benefit-phrase list. See tests\ForbiddenPhrase.ps1.
+    . (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+    $script:ForbiddenPhrase = Get-OptimizerForbiddenPhrase
+
     $script:Contract        = Get-RemovalContract
     $script:FindingContract = Get-FindingContract
 
@@ -987,7 +991,11 @@ Describe 'The preview' {
         # detector's own evidence line ends "not a promise of space reclaimed",
         # and the preview repeats it. Forbidding the bare word 'reclaim' would
         # therefore ban the sentence that exists to make the promise explicitly.
-        foreach ($forbidden in 'free up', 'frees up', 'freed up', 'will reclaim', 'space you will', 'will save', 'you will get back', 'speed up', 'run faster') {
+        # The list moved to tests\ForbiddenPhrase.ps1 in P5-C3. It used to be
+        # written out here, and written out differently in
+        # tests\DispatcherJunkAmendment.Tests.ps1; this suite now enforces the
+        # union of the two, which is a superset of the nine that were here.
+        foreach ($forbidden in $script:ForbiddenPhrase) {
             $preview | Should -Not -Match ([regex]::Escape($forbidden))
         }
         $preview | Should -Match 'on disk now'

@@ -405,11 +405,20 @@ by walking upwards out of one.
 enumerates the immediate subdirectories of `User Data` to find the profiles, and
 takes only those named child folders from each. Hard-coding `Default` instead was
 considered and rejected — Chrome has four profile folders on the development machine
-and `Default` holds only 636 MB of the 1.68 GB in its cache, so naming `Default`
-alone would have missed the other ~1.06 GB **without saying so**.
+and `Default` holds only 636 MiB of the 1.68 GiB in its cache, so naming `Default`
+alone would have missed the other ~1.06 GiB **without saying so**.
 
 Browser entries cover **cache only**. Cookies, history, saved logins, bookmarks and
 extension data live in other folders inside the same profile and are never named.
+
+**One Finding per browser, with the profiles named in its evidence** (P5-C3, Q14).
+A profile-expanded location stays a single row: one Finding per profile would
+multiply the junk section by the number of people who use the machine, and P4-C1
+already has 149 startup rows, so the split the total hides is stated instead, in
+the row's own evidence and on the Finding as `ProfileBreakdown`: profile name,
+eligible file count and eligible bytes, largest first, **including profiles that
+hold nothing**. Adding a `profileChildPath` to an entry therefore also gives that
+entry a profile line for free; nothing in the JSON turns it on.
 
 `resolver` is a closed set of two: `path` (the default) and `recycleBin`, which is
 code because the Recycle Bin is one folder per fixed drive named after the current
@@ -462,7 +471,7 @@ needed" like every row in this category, and it carries the `minimumAgeDays: 30`
 above.
 
 Reporting an inventory-only entry matters as much as not flagging it: "Recycle Bin:
-2.3 MB, not flagged" is a number the user wants, and a silently absent Recycle Bin
+2.3 MiB, not flagged" is a number the user wants, and a silently absent Recycle Bin
 is the failure mode this project is built against.
 
 ### What must never go on this list

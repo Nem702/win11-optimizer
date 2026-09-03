@@ -30,7 +30,7 @@
     One Finding per curated location, never one per file. A developer's %TEMP%
     holds thousands of files (1,964 when this was written); a Finding each is
     unreviewable in P4-C1 and unactionable by a human. So a Finding is
-    "Windows Update download cache -- N files, X MB", its Id is the location's
+    "Windows Update download cache -- N files, X MiB", its Id is the location's
     curated id, and the enumerated file list hangs off it.
 
     CONSEQUENCE FOR P3-C1: RemovalMethod 'FileDelete' on a JunkFile Finding means
@@ -120,6 +120,9 @@ $script:JunkEntryTypeName      = 'Win11Optimizer.JunkLocationEntry'
 $script:JunkInventoryTypeName  = 'Win11Optimizer.JunkInventory'
 $script:JunkScanResultTypeName = 'Win11Optimizer.JunkScanResult'
 $script:JunkScanSourceTypeName = 'Win11Optimizer.JunkScanSource'
+# One per browser profile inside a profile-expanded location. Q14: a browser is
+# still ONE Finding, and this is how the row says it is four profiles.
+$script:JunkProfileTypeName    = 'Win11Optimizer.JunkLocationProfile'
 
 # The in-use verdicts. 'Undetermined' exists because a probe that cannot answer
 # must not be read as "free" -- it is counted separately and treated as in use.
@@ -272,6 +275,15 @@ function Format-JunkSize {
     # Human-readable size for evidence lines. Invariant culture on purpose: the
     # evidence string ends up in a JSON run log and must not change shape with the
     # machine's locale.
+    #
+    # THE UNITS ARE BINARY AND THE LABELS SAY SO. The divisors below are 1024,
+    # 1024^2 and 1024^3, so the labels are KiB / MiB / GiB, not KB / MB / GB.
+    # Explorer divides by the same 1024 and labels it 'GB', so on its own this was
+    # a label that agreed with the number beside it in the only place a user could
+    # compare them. It stops agreeing the moment anything else does -- a drive
+    # maker's GB, a download size, a Storage Settings figure -- and this project's
+    # whole pitch is that the number and the sentence never disagree. KiB is the
+    # unambiguous name for what is actually being counted.
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -284,9 +296,9 @@ function Format-JunkSize {
 
     $culture = [System.Globalization.CultureInfo]::InvariantCulture
     if ($value -lt 1024) { return ([long] $value).ToString('N0', $culture) + ' bytes' }
-    if ($value -lt 1048576) { return ($value / 1024).ToString('N1', $culture) + ' KB' }
-    if ($value -lt 1073741824) { return ($value / 1048576).ToString('N1', $culture) + ' MB' }
-    ($value / 1073741824).ToString('N2', $culture) + ' GB'
+    if ($value -lt 1048576) { return ($value / 1024).ToString('N1', $culture) + ' KiB' }
+    if ($value -lt 1073741824) { return ($value / 1048576).ToString('N1', $culture) + ' MiB' }
+    ($value / 1073741824).ToString('N2', $culture) + ' GiB'
 }
 
 function Format-JunkCount {
@@ -357,7 +369,7 @@ function New-JunkLocation {
         the matcher, the tests and P4-C1 can rely on the shape.
 
         This record is reported for EVERY location, including ones that produce no
-        Finding and ones that could not be read. "Recycle Bin: 2.3 MB, not
+        Finding and ones that could not be read. "Recycle Bin: 2.3 MiB, not
         flagged" is inventory the user wants; "Recycle Bin" silently absent is the
         failure mode this project is built against.
     #>
@@ -396,6 +408,11 @@ function New-JunkLocation {
         [Parameter()] [long] $EligibleFileCount = 0,
         [Parameter()] [long] $EligibleBytes = 0,
         [Parameter()] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $EligibleFile,
+        # Q14. One record per browser profile for a location whose paths came out
+        # of the profileChildPath expansion; empty for every other location, which
+        # is most of them. Always present, so the matcher and the tests can read
+        # it without asking whether it is there.
+        [Parameter()] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ProfileBreakdown,
         [Parameter()] [double] $DurationSeconds = 0,
         [Parameter()] [AllowNull()] [string] $Detail
     )
@@ -417,6 +434,9 @@ function New-JunkLocation {
 
     $files = @()
     if ($null -ne $EligibleFile) { $files = @($EligibleFile | Where-Object { $null -ne $_ }) }
+
+    $profile = @()
+    if ($null -ne $ProfileBreakdown) { $profile = @($ProfileBreakdown | Where-Object { $null -ne $_ }) }
 
     [pscustomobject]@{
         PSTypeName                = $script:JunkLocationTypeName
@@ -449,6 +469,7 @@ function New-JunkLocation {
         EligibleFileCount         = $EligibleFileCount
         EligibleBytes             = $EligibleBytes
         EligibleFile              = [psobject[]] $files
+        ProfileBreakdown          = [psobject[]] $profile
         DurationSeconds           = $DurationSeconds
         Detail                    = $Detail
     }
@@ -962,7 +983,7 @@ function Resolve-JunkLocationPath {
             for every immediate subdirectory of the base that actually has that
             child. Enumerating the profile folders is why this is not a
             hard-coded 'Default': Chrome has three profiles on this machine and
-            hard-coding one would have missed 660 MB of the 1.3 GB in its cache
+            hard-coding one would have missed 660 MiB of the 1.3 GiB in its cache
             WITHOUT SAYING SO, which is the failure mode this project is built
             against. The child path itself is still named precisely -- the
             enumeration finds profiles, never cache folders;
@@ -971,6 +992,15 @@ function Resolve-JunkLocationPath {
         Every resolved path is re-checked against the protected list. The load-time
         check catches a bad list; this catches a machine whose %TEMP% has been
         redirected somewhere it must not follow.
+
+        RETURNS Path AND Profile AS PARALLEL ARRAYS, same length, same order.
+        Profile is the profile folder's own name for a path that came out of the
+        profileChildPath expansion, and the empty string for every other shape.
+        It is captured HERE because here is the only place that knows it: by the
+        time a caller has '<base>\Profile 1\Cache\Cache_Data' the only way back to
+        'Profile 1' is to re-expand the environment variable and count segments,
+        and re-deriving machine state in the pure half of the detector is exactly
+        what Find-JunkFileLocation is written not to do. See Q14.
     #>
     [CmdletBinding()]
     param(
@@ -978,13 +1008,17 @@ function Resolve-JunkLocationPath {
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] [psobject[]] $ProtectedPath
     )
 
-    $paths   = New-Object System.Collections.Generic.List[string]
-    $notes   = New-Object System.Collections.Generic.List[string]
-    $refused = $false
+    $paths    = New-Object System.Collections.Generic.List[string]
+    $profiles = New-Object System.Collections.Generic.List[string]
+    $notes    = New-Object System.Collections.Generic.List[string]
+    $refused  = $false
 
     $resolver = [string](Get-OptimizerProperty -InputObject $Entry -Name 'Resolver' -Default $script:JunkResolverPath)
 
-    $candidates = New-Object System.Collections.Generic.List[string]
+    # Candidate paths and the profile each one belongs to, kept side by side so
+    # the protected-path filter below drops both halves together.
+    $candidates       = New-Object System.Collections.Generic.List[string]
+    $candidateProfile = New-Object System.Collections.Generic.List[string]
 
     if ($resolver -eq $script:JunkResolverRecycleBin) {
         $sid = $null
@@ -996,6 +1030,7 @@ function Resolve-JunkLocationPath {
         else {
             foreach ($root in @(Get-JunkFixedDriveRoot)) {
                 $candidates.Add((Join-Path -Path (Join-Path -Path $root -ChildPath '$Recycle.Bin') -ChildPath $sid))
+                $candidateProfile.Add('')
             }
             if ($candidates.Count -lt 1) {
                 $notes.Add('No fixed drive was readable, so no Recycle Bin folder could be located.')
@@ -1020,6 +1055,7 @@ function Resolve-JunkLocationPath {
 
             if ($childPaths.Count -lt 1) {
                 $candidates.Add($expanded)
+                $candidateProfile.Add('')
                 continue
             }
 
@@ -1049,17 +1085,26 @@ function Resolve-JunkLocationPath {
             }
 
             foreach ($profileRoot in $profileRoots) {
+                # The profile folder's own name, taken here rather than parsed
+                # back out of the joined path later. GetFileName is used rather
+                # than a substring of $expanded so a base path that arrived with
+                # or without a trailing separator gives the same answer.
+                $profileName = ''
+                try { $profileName = [string][System.IO.Path]::GetFileName($profileRoot.TrimEnd('\', '/')) } catch { $profileName = '' }
+
                 foreach ($child in $childPaths) {
                     $candidate = Join-Path -Path $profileRoot -ChildPath ([string] $child)
                     if ((Test-OptimizerPathPresent -Path $candidate -PathType Directory) -eq $true) {
                         $candidates.Add($candidate)
+                        $candidateProfile.Add($profileName)
                     }
                 }
             }
         }
     }
 
-    foreach ($candidate in $candidates) {
+    for ($index = 0; $index -lt $candidates.Count; $index++) {
+        $candidate = $candidates[$index]
         $conflict = Get-JunkProtectedPathConflict -Path $candidate -ProtectedPath $ProtectedPath
         if ($null -ne $conflict) {
             $refused = $true
@@ -1067,10 +1112,12 @@ function Resolve-JunkLocationPath {
             continue
         }
         $paths.Add($candidate)
+        $profiles.Add($candidateProfile[$index])
     }
 
     [pscustomobject]@{
         Path      = [string[]] $paths.ToArray()
+        Profile   = [string[]] $profiles.ToArray()
         Note      = [string[]] $notes.ToArray()
         IsRefused = $refused
     }
@@ -1211,6 +1258,10 @@ function Get-JunkLocationInventory {
 
         $resolution = Resolve-JunkLocationPath -Entry $entry -ProtectedPath $protected
         $resolved   = @($resolution.Path)
+        # Aligned with $resolved, one entry each, '' for anything that did not
+        # come out of a profileChildPath expansion. Read by index below rather
+        # than parsed back out of the path -- see Resolve-JunkLocationPath.
+        $resolvedProfile = @($resolution.Profile)
         $detail     = $null
         if (@($resolution.Note).Count -gt 0) { $detail = ($resolution.Note -join ' ') }
 
@@ -1284,7 +1335,26 @@ function Get-JunkLocationInventory {
         $candidates       = New-Object System.Collections.Generic.List[psobject]
         $walkFailure      = $null
 
-        foreach ($path in $resolved) {
+        # Q14: the per-profile split, for a location whose paths came out of the
+        # profileChildPath expansion. A browser is ONE row -- P4-C1 already has
+        # 149 startup rows and one Finding per profile would multiply the junk
+        # section by four -- so the split lives in the evidence instead, and this
+        # is where the numbers for it are collected. Nothing is re-walked: the
+        # per-path figures the walk already produces are added up per profile, and
+        # each candidate file is tagged with the profile whose folder it was found
+        # under so the eligible half can be attributed without a second pass.
+        #
+        # Ordered, so the evidence line comes out in profile-enumeration order
+        # before it is sorted by size, and so a machine with no profile-expanded
+        # location pays for an empty dictionary and nothing else.
+        $profileTotals    = [ordered]@{}
+        $candidateProfile = New-Object System.Collections.Generic.List[string]
+
+        for ($pathIndex = 0; $pathIndex -lt $resolved.Count; $pathIndex++) {
+            $path = $resolved[$pathIndex]
+            $pathProfile = ''
+            if ($pathIndex -lt $resolvedProfile.Count) { $pathProfile = [string] $resolvedProfile[$pathIndex] }
+
             if ((Test-OptimizerPathPresent -Path $path -PathType Directory) -ne $true) { continue }
 
             $content = $null
@@ -1311,7 +1381,23 @@ function Get-JunkLocationInventory {
             foreach ($sample in $content.UnreadableDirectorySample) {
                 if ($unreadableSample.Count -lt $script:JunkMaxUnreadableSample) { $unreadableSample.Add($sample) }
             }
-            foreach ($candidate in $content.Candidate) { $candidates.Add($candidate) }
+            foreach ($candidate in $content.Candidate) {
+                $candidates.Add($candidate)
+                $candidateProfile.Add($pathProfile)
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($pathProfile)) {
+                if (-not $profileTotals.Contains($pathProfile)) {
+                    $profileTotals[$pathProfile] = [ordered]@{
+                        FileCount         = [long] 0
+                        TotalBytes        = [long] 0
+                        EligibleFileCount = [long] 0
+                        EligibleBytes     = [long] 0
+                    }
+                }
+                $profileTotals[$pathProfile]['FileCount']  = [long] $profileTotals[$pathProfile]['FileCount'] + $content.FileCount
+                $profileTotals[$pathProfile]['TotalBytes'] = [long] $profileTotals[$pathProfile]['TotalBytes'] + $content.TotalBytes
+            }
         }
 
         if ($null -ne $walkFailure) {
@@ -1337,9 +1423,23 @@ function Get-JunkLocationInventory {
             }
             else {
                 $probeTimer = [System.Diagnostics.Stopwatch]::StartNew()
-                foreach ($candidate in $candidates) {
+                for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex++) {
+                    $candidate = $candidates[$candidateIndex]
                     $verdict = Test-JunkFileInUse -Path $candidate.Path
-                    if ($verdict -eq $script:JunkInUseFree) { $eligible.Add($candidate) }
+                    if ($verdict -eq $script:JunkInUseFree) {
+                        $eligible.Add($candidate)
+
+                        # Attributed by the index the candidate was collected at,
+                        # not by matching its path against the resolved list --
+                        # the tag is exact and costs nothing, and a prefix test
+                        # over 17,841 Chrome files times twelve cache folders is
+                        # a measurable amount of nothing to be exact about.
+                        $owner = $candidateProfile[$candidateIndex]
+                        if (-not [string]::IsNullOrWhiteSpace($owner) -and $profileTotals.Contains($owner)) {
+                            $profileTotals[$owner]['EligibleFileCount'] = [long] $profileTotals[$owner]['EligibleFileCount'] + 1
+                            $profileTotals[$owner]['EligibleBytes']     = [long] $profileTotals[$owner]['EligibleBytes'] + [long] $candidate.SizeBytes
+                        }
+                    }
                     elseif ($verdict -eq $script:JunkInUseHeld) { $inUseCount++ }
                     else { $undeterminedCount++ }
                 }
@@ -1351,6 +1451,29 @@ function Get-JunkLocationInventory {
 
         $eligibleBytes = [long] 0
         foreach ($file in $eligible) { $eligibleBytes += $file.SizeBytes }
+
+        # One record per profile, largest first. Largest first because the whole
+        # point of the split is that one profile is usually most of the row, and
+        # a reader who stops after the first name should have read the one that
+        # matters. A profile that resolved and holds nothing eligible is still
+        # listed, at the bottom, with its zero: "four profiles, three of them
+        # empty" is the answer, and a silently absent profile is not.
+        $profileBreakdown = New-Object System.Collections.Generic.List[psobject]
+        foreach ($profileName in @($profileTotals.Keys)) {
+            $bucket = $profileTotals[$profileName]
+            $profileBreakdown.Add([pscustomobject]@{
+                PSTypeName        = $script:JunkProfileTypeName
+                Profile           = [string] $profileName
+                FileCount         = [long] $bucket['FileCount']
+                TotalBytes        = [long] $bucket['TotalBytes']
+                EligibleFileCount = [long] $bucket['EligibleFileCount']
+                EligibleBytes     = [long] $bucket['EligibleBytes']
+            })
+        }
+        $sortedProfile = [psobject[]] @($profileBreakdown |
+            Sort-Object -Property @{ Expression = 'EligibleBytes'; Descending = $true },
+                                  @{ Expression = 'TotalBytes'; Descending = $true },
+                                  @{ Expression = 'Profile'; Descending = $false })
 
         $isFloor = ($unreadableCount -gt 0)
         $timer.Stop()
@@ -1403,6 +1526,7 @@ function Get-JunkLocationInventory {
             -EligibleFileCount $eligible.Count `
             -EligibleBytes $eligibleBytes `
             -EligibleFile ([psobject[]] $eligible.ToArray()) `
+            -ProfileBreakdown $sortedProfile `
             -DurationSeconds $seconds `
             -Detail $detail))
     }
@@ -1528,6 +1652,40 @@ function Find-JunkFileLocation {
             $evidence.Add("Age window: this location was measured against its own $windowDays-day window rather than the $MinimumAgeDays days the rest of this scan used, because what is in it is worth keeping for longer.")
         }
 
+        # Q14: the profile split, before the paths. A browser stays ONE row --
+        # P4-C1 already has 149 startup rows and per-profile Findings would
+        # multiply the junk section by the number of people who use the machine --
+        # so the thing a bare "Brave web cache, 364.2 MiB" hides is said here
+        # instead, in the same terms the headline uses. This is P3-C1a's per-row
+        # split rule applied one level down: the total is not wrong, it is
+        # unreadable, and the fix is to show what it is made of rather than to
+        # break it into rows nobody can review.
+        #
+        # The list is already largest-first and already includes profiles holding
+        # nothing eligible. Nothing here re-derives a profile name from a path --
+        # see Resolve-JunkLocationPath.
+        $profileBreakdown = @(Get-OptimizerProperty -InputObject $record -Name 'ProfileBreakdown' -Default @())
+        if ($profileBreakdown.Count -gt 0) {
+            $profileText = New-Object System.Collections.Generic.List[string]
+            foreach ($profile in $profileBreakdown) {
+                $profileText.Add(("{0} -- {1} files, {2}" -f `
+                    [string](Get-OptimizerProperty -InputObject $profile -Name 'Profile' -Default '(unnamed)'),
+                    (Format-JunkCount -Count ([long](Get-OptimizerProperty -InputObject $profile -Name 'EligibleFileCount' -Default 0))),
+                    (Format-JunkSize -Bytes ([long](Get-OptimizerProperty -InputObject $profile -Name 'EligibleBytes' -Default 0)))))
+            }
+            if ($profileBreakdown.Count -eq 1) {
+                # Said even when there is nothing to split, because "one profile"
+                # and "we only looked at one profile" are different claims and
+                # the reader cannot tell them apart from silence.
+                $evidence.Add("Profiles: one browser profile, and this is all of it -- $($profileText[0]). Every profile folder was enumerated; there is no second one.")
+            }
+            else {
+                $evidence.Add(("Profiles: the figure above is {0} separate browser profiles, largest first -- {1}. This row covers all of them together; a single profile cannot be selected on its own." -f `
+                    (Format-JunkCount -Count $profileBreakdown.Count),
+                    ($profileText -join '; ')))
+            }
+        }
+
         if ($resolvedPath.Count -gt 0) {
             $evidence.Add("Location: $($resolvedPath -join '; ')")
         }
@@ -1585,6 +1743,10 @@ function Find-JunkFileLocation {
         $finding | Add-Member -MemberType NoteProperty -Name 'EligibleBytes'     -Value $eligibleBytes
         $finding | Add-Member -MemberType NoteProperty -Name 'EligibleFile'      -Value ([psobject[]] @(Get-OptimizerProperty -InputObject $record -Name 'EligibleFile' -Default @()))
         $finding | Add-Member -MemberType NoteProperty -Name 'IsSizeFloor'       -Value ([bool](Get-OptimizerProperty -InputObject $record -Name 'IsSizeFloor' -Default $false))
+        # Q14. The same split the evidence sentence states, as data, so P4-C1 can
+        # render it without parsing English back out of a sentence. Empty for
+        # every location that is not profile-expanded.
+        $finding | Add-Member -MemberType NoteProperty -Name 'ProfileBreakdown'  -Value ([psobject[]] $profileBreakdown)
         # The window this row was measured against, not the scan's -- the same
         # number the evidence line above quotes, so a consumer reading the field
         # and a user reading the sentence never disagree.

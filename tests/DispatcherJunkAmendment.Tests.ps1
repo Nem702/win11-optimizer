@@ -28,6 +28,12 @@
     Run:  .\tests\Invoke-Tests.ps1
 #>
 
+# Discovery-time, for the -ForEach below. Pester runs a file's top level during
+# discovery and its BeforeAll during the run, in separate scopes, so the list is
+# dot-sourced in both -- see tests\ForbiddenPhrase.ps1.
+. (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+$ForbiddenPhrase = Get-OptimizerForbiddenPhrase
+
 BeforeAll {
     $script:RepoRoot      = Split-Path -Path $PSScriptRoot -Parent
     $script:EngineRoot    = Join-Path $script:RepoRoot 'src\Win11Optimizer.Engine'
@@ -46,10 +52,13 @@ BeforeAll {
 
     Import-Module $script:ManifestPath -Force -ErrorAction Stop
 
-    # The phrases this project never uses about disk space. 'reclaim ' carries a
-    # trailing space on purpose: every junk Finding ends with "not a promise of
-    # space reclaimed", which is the opposite claim and must survive.
-    $script:ForbiddenPhrase = @('free up', 'reclaim ', 'will save', 'speed up', 'run faster')
+    # The phrases this project never uses about disk space. The list itself moved
+    # to tests\ForbiddenPhrase.ps1 in P5-C3 -- it used to be written out here and
+    # written out DIFFERENTLY in tests\RemovalDispatcher.Tests.ps1, and three
+    # other suites read both by AST to get the union. One file now, and this
+    # suite enforces the union rather than its old five.
+    . (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+    $script:ForbiddenPhrase = Get-OptimizerForbiddenPhrase
 
     function New-AmendmentJunkList {
         param([Parameter(Mandatory)] [string] $Content)
@@ -440,7 +449,7 @@ Describe 'Change 2: the servicing logs are sized and never offered' {
 
 Describe 'Changes 1 and 2: the amended list still promises nothing' {
 
-    It 'the shipped list file never says "<_>"' -ForEach @('free up', 'reclaim ', 'will save', 'speed up', 'run faster') {
+    It 'the shipped list file never says "<_>"' -ForEach $ForbiddenPhrase {
         $raw = [System.IO.File]::ReadAllText($script:ListPath)
         $raw.IndexOf($PSItem, [System.StringComparison]::OrdinalIgnoreCase) | Should -Be -1
     }

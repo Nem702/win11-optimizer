@@ -643,7 +643,11 @@ Describe 'Find-JunkFileLocation: one Finding per location' {
         $finding = @(Find-JunkFileLocation -Location @($location))[0]
         ($finding.Evidence -join ' ') | Should -Match '1,381 files'
         ($finding.Evidence -join ' ') | Should -Match '1,964 files'
-        ($finding.Evidence -join ' ') | Should -Match 'MB|GB'
+        # Binary units, spelled as binary units -- Format-JunkSize divides by
+        # 1024. 'MB|GB' passed on either spelling once 'MiB' contains no 'MB';
+        # naming the exact figures instead pins the unit AND the arithmetic.
+        ($finding.Evidence -join ' ') | Should -Match '745\.8 MiB'
+        ($finding.Evidence -join ' ') | Should -Match '1\.61 GiB'
     }
 
     It 'is Known confidence, requires consent, and reads "Review needed"' {
@@ -776,6 +780,153 @@ Describe 'The age gate' {
         $location.FileCount         | Should -Be 1
         $location.AgeHeldBackCount  | Should -Be 1
         $location.EligibleFileCount | Should -Be 0
+    }
+}
+
+Describe 'Q14: a browser is one row, and the row says how many profiles it is' {
+
+    # Chunk P5-C3 change 3. A cache location declared with profileChildPath
+    # resolves to <base>\<profile>\<child> for every profile, and used to collapse
+    # into a single number: "Brave web cache, 352.3 MiB" with no way to tell that
+    # it was four people's browsing. The row stays ONE row -- per-profile Findings
+    # would multiply the junk section by the number of profiles, and P4-C1 already
+    # renders 149 startup rows -- so the split is in the evidence and on the
+    # Finding as ProfileBreakdown.
+
+    BeforeAll {
+        # Two profiles with a known size split, plus one that resolves and holds
+        # nothing eligible. Every file is backdated well past the window so the
+        # age gate cannot change the answer between the two profiles.
+        $script:ProfileBase = Join-Path $script:Scratch ("userdata-" + [guid]::NewGuid().ToString('N'))
+        $old = [datetime]::UtcNow.AddDays(-90)
+
+        function New-ProfileCacheFile {
+            param([string] $Profile, [int] $Count, [int] $Bytes)
+            $dir = Join-Path (Join-Path $script:ProfileBase $Profile) 'Cache\Cache_Data'
+            $null = New-Item -Path $dir -ItemType Directory -Force
+            for ($i = 0; $i -lt $Count; $i++) {
+                $file = Join-Path $dir "f-$i.tmp"
+                [System.IO.File]::WriteAllText($file, ('x' * $Bytes))
+                [System.IO.File]::SetCreationTimeUtc($file, $old)
+                [System.IO.File]::SetLastWriteTimeUtc($file, $old)
+            }
+            $dir
+        }
+
+        $null = New-ProfileCacheFile -Profile 'Default'   -Count 2 -Bytes 100
+        $null = New-ProfileCacheFile -Profile 'Profile 1' -Count 3 -Bytes 1000
+        # Resolves (the child folder is there) and is empty.
+        $null = New-ProfileCacheFile -Profile 'Profile 2' -Count 0 -Bytes 0
+        # Not a profile at all: no Cache\Cache_Data under it, so it must not
+        # appear in the breakdown even though it is a subdirectory of the base.
+        $null = New-Item -Path (Join-Path $script:ProfileBase 'Crashpad') -ItemType Directory -Force
+
+        $escaped = $script:ProfileBase.Replace('\', '\\')
+        $script:ProfileEntries = @(Get-JunkLocationList -Path (New-TestJunkList -Content @"
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "fabricated-browser",
+      "displayName": "Fabricated browser web cache",
+      "reason": "A fabricated browser profile tree created by the test suite so the per-profile split can be measured against sizes that are known exactly.",
+      "provenance": "measured",
+      "paths": [ "$escaped" ],
+      "profileChildPath": [ "Cache\\Cache_Data" ]
+    }
+  ]
+}
+"@))
+
+        $script:ProfileLocation = @((Get-JunkLocationInventory -LocationEntry $script:ProfileEntries -MinimumAgeDays 7).Locations)[0]
+        $script:ProfileFindings = @(Find-JunkFileLocation -Location @($script:ProfileLocation) -MinimumAgeDays 7)
+        $script:ProfileEvidence = ($script:ProfileFindings[0].Evidence -join ' ')
+    }
+
+    It 'is still exactly one Finding for the whole browser' {
+        $script:ProfileFindings.Count | Should -Be 1
+        $script:ProfileFindings[0].Id | Should -Be 'fabricated-browser'
+    }
+
+    It 'carries one breakdown record per profile that resolved, and no others' {
+        $breakdown = @($script:ProfileLocation.ProfileBreakdown)
+        $breakdown.Count | Should -Be 3
+        @($breakdown.Profile) | Should -Contain 'Default'
+        @($breakdown.Profile) | Should -Contain 'Profile 1'
+        @($breakdown.Profile) | Should -Contain 'Profile 2'
+        # A subdirectory of the base with no cache folder under it is not a
+        # profile, and enumerating one would be the detector reading a browser
+        # folder it was never told to read.
+        @($breakdown.Profile) | Should -Not -Contain 'Crashpad'
+    }
+
+    It 'gives each profile its own file count and bytes, and they add up to the row' {
+        $breakdown = @($script:ProfileLocation.ProfileBreakdown)
+        $default = @($breakdown | Where-Object { $_.Profile -eq 'Default' })[0]
+        $one     = @($breakdown | Where-Object { $_.Profile -eq 'Profile 1' })[0]
+        $two     = @($breakdown | Where-Object { $_.Profile -eq 'Profile 2' })[0]
+
+        $default.EligibleFileCount | Should -Be 2
+        $default.EligibleBytes     | Should -Be 200
+        $one.EligibleFileCount     | Should -Be 3
+        $one.EligibleBytes         | Should -Be 3000
+        $two.EligibleFileCount     | Should -Be 0
+        $two.EligibleBytes         | Should -Be 0
+
+        # The whole point: the split accounts for the row exactly. A breakdown
+        # that did not sum to the headline would be a second number disagreeing
+        # with the first, which is the failure this project exists to avoid.
+        ($default.EligibleBytes + $one.EligibleBytes + $two.EligibleBytes) |
+            Should -Be $script:ProfileLocation.EligibleBytes
+        ($default.EligibleFileCount + $one.EligibleFileCount + $two.EligibleFileCount) |
+            Should -Be $script:ProfileLocation.EligibleFileCount
+    }
+
+    It 'orders them largest first' {
+        $breakdown = @($script:ProfileLocation.ProfileBreakdown)
+        $breakdown[0].Profile | Should -Be 'Profile 1'
+        $breakdown[2].Profile | Should -Be 'Profile 2' -Because 'the empty one goes last, and is still listed'
+    }
+
+    It 'names every profile and its size in the evidence, with the count in words' {
+        $script:ProfileEvidence | Should -Match 'Profiles:'
+        $script:ProfileEvidence | Should -Match '3 separate browser profiles'
+        $script:ProfileEvidence | Should -Match 'Profile 1 -- 3 files, 2\.9 KiB'
+        $script:ProfileEvidence | Should -Match 'Default -- 2 files, 200 bytes'
+        $script:ProfileEvidence | Should -Match 'Profile 2 -- 0 files, 0 bytes'
+    }
+
+    It 'says the row cannot be split, because it cannot' {
+        # The evidence must not imply a choice the review screen does not offer:
+        # RemovalMethod FileDelete acts on the Finding's whole EligibleFile set.
+        $script:ProfileEvidence | Should -Match 'covers all of them'
+    }
+
+    It 'puts the same split on the Finding as data, not only as a sentence' {
+        $breakdown = @($script:ProfileFindings[0].ProfileBreakdown)
+        $breakdown.Count | Should -Be 3
+        (@($breakdown | ForEach-Object { "$($_.Profile)=$($_.EligibleBytes)" }) -join '; ') |
+            Should -BeExactly (@($script:ProfileLocation.ProfileBreakdown | ForEach-Object { "$($_.Profile)=$($_.EligibleBytes)" }) -join '; ')
+    }
+
+    It 'says nothing about profiles for a location that has none' {
+        $tree = New-TestJunkTree -OldFileCount 2 -NewFileCount 0
+        $entries = @(Get-JunkLocationList -Path (New-TestJunkListForPath -Path $tree))
+        $location = @((Get-JunkLocationInventory -LocationEntry $entries -MinimumAgeDays 7).Locations)[0]
+        @($location.ProfileBreakdown).Count | Should -Be 0
+
+        $finding = @(Find-JunkFileLocation -Location @($location) -MinimumAgeDays 7)[0]
+        ($finding.Evidence -join ' ') | Should -Not -Match 'Profiles:'
+        @($finding.ProfileBreakdown).Count | Should -Be 0
+    }
+
+    It 'reads the profile name from the resolution, never back out of the path' {
+        # Find-JunkFileLocation is the pure half and must stay pure: re-deriving
+        # a profile name means re-expanding an environment variable and counting
+        # segments, which is machine state the matcher is not allowed to touch.
+        $matcher = $script:SourceCode.Substring($script:SourceCode.IndexOf('function Find-JunkFileLocation'))
+        $matcher | Should -Not -Match 'ExpandEnvironmentVariables'
+        $matcher | Should -Not -Match 'GetDirectories'
     }
 }
 
@@ -1029,7 +1180,7 @@ Describe 'Invoke-JunkFileScan: the shape of the result' {
     }
 
     It 'reports every location, including the ones that produced no Finding' {
-        # "Recycle Bin: 2.3 MB, not flagged" is inventory the user wants; a
+        # "Recycle Bin: 2.3 MiB, not flagged" is inventory the user wants; a
         # silently absent Recycle Bin is the failure mode this project is built
         # against.
         foreach ($id in 'recycle-bin', 'prefetch', 'user-temp', 'windows-temp') {

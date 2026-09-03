@@ -34,7 +34,17 @@ if ($On51) {
     }
     $arguments = @('-NoProfile', '-File', $PSCommandPath)
     if ($Detailed) { $arguments += '-Detailed' }
-    & $windowsPowerShell @arguments
+
+    $previousModulePath = $env:PSModulePath
+    try {
+        # Windows PowerShell computes its own default when this is absent. Inheriting
+        # PowerShell 7's copy puts 7's Modules folder ahead of 5.1's own, and 5.1 then
+        # loads 7's Microsoft.PowerShell.Utility -- which has no Import-PowerShellDataFile.
+        Remove-Item Env:\PSModulePath -ErrorAction SilentlyContinue
+        & $windowsPowerShell @arguments
+    }
+    finally { $env:PSModulePath = $previousModulePath }
+
     exit $LASTEXITCODE
 }
 

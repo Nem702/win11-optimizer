@@ -28,6 +28,12 @@
     Run:  .\tests\Invoke-Tests.ps1        (and -On51, which is not optional)
 #>
 
+# Discovery-time, for the -ForEach that makes one test per forbidden phrase.
+# Pester runs a file's top level during discovery and its BeforeAll during the
+# run, in separate scopes, so the list is dot-sourced in both.
+. (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+$ForbiddenPhrase = Get-OptimizerForbiddenPhrase
+
 BeforeAll {
     $script:RepoRoot     = Split-Path -Path $PSScriptRoot -Parent
     $script:EngineRoot   = Join-Path $script:RepoRoot 'src\Win11Optimizer.Engine'
@@ -93,36 +99,15 @@ BeforeAll {
         } | Sort-Object -Unique
     )
 
-    # ---- the forbidden benefit-claim phrases, READ OUT OF THE EXISTING TESTS -
+    # ---- the forbidden benefit-claim phrases -------------------------------
     #
-    # The prompt says the existing forbidden-phrase tests apply to whatever this
-    # prints, and there is no shared file to import -- so the lists are lifted
-    # out of the three suites that own them, by AST, at run time. Anything added
-    # to any of them from now on is picked up here without an edit. This is the
-    # same extractor tests\ActionLog.Tests.ps1 uses, and it takes the union.
-    function Get-ForbiddenPhraseFromSuite {
-        param([Parameter(Mandatory)] [string] $Path)
-
-        $tokens = $null
-        $errors = $null
-        $parsed = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $errors)
-
-        $found = New-Object System.Collections.Generic.List[string]
-        foreach ($array in @($parsed.FindAll({
-            param($node) $node -is [System.Management.Automation.Language.ArrayLiteralAst]
-        }, $true))) {
-            $values = @($array.Elements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] } | ForEach-Object { $_.Value })
-            if (@($values).Count -ne @($array.Elements).Count) { continue }
-            if (@($values | Where-Object { $_ -eq 'free up' }).Count -lt 1) { continue }
-            foreach ($value in $values) { $null = $found.Add($value) }
-        }
-        [string[]] @($found.ToArray() | Sort-Object -Unique)
-    }
-
-    $script:ForbiddenPhrase = [string[]] @(@(
-        @(Get-ForbiddenPhraseFromSuite -Path (Join-Path $PSScriptRoot 'DispatcherJunkAmendment.Tests.ps1')) +
-        @(Get-ForbiddenPhraseFromSuite -Path (Join-Path $PSScriptRoot 'RemovalDispatcher.Tests.ps1'))
-    ) | Sort-Object -Unique)
+    # One file, read by every suite that enforces them -- tests\ForbiddenPhrase.ps1,
+    # P5-C3 change 5. It replaces the AST extractor that lived here, in
+    # tests\ActionLog.Tests.ps1 and in tests\ExecutePlan.Tests.ps1, three copies
+    # of the same twenty lines, needed only because the lists lived in two other
+    # suites and disagreed with each other.
+    . (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+    $script:ForbiddenPhrase = Get-OptimizerForbiddenPhrase
 
     # ---- fixtures: fabricated scans ----------------------------------------
     #
@@ -381,11 +366,14 @@ Describe 'Nothing it prints makes a claim about what this PC will do afterwards'
     It 'reads a real forbidden-phrase list out of the existing suites' {
         # The guard against a vacuous pass: if the extractor stops finding the
         # lists, every assertion below becomes a loop over nothing.
-        $script:ForbiddenPhrase.Count | Should -BeGreaterThan 4
+        $script:ForbiddenPhrase.Count | Should -BeGreaterOrEqual 10 -Because "ten phrases is the union tests\ForbiddenPhrase.ps1 ships; a shorter list means something silently stopped being enforced"
         $script:ForbiddenPhrase | Should -Contain 'free up'
     }
 
-    It 'never says <_>' -ForEach @('free up', 'frees up', 'freed up', 'will save', 'speed up', 'run faster', 'you will get back') {
+    It 'never says <_>' -ForEach $ForbiddenPhrase {
+        # One named test per phrase, from tests\ForbiddenPhrase.ps1. This was a
+        # hand-written subset of seven beside the extracted list; it is the whole
+        # list now, so the two can no longer drift apart.
         $phrase = $PSItem
         $script:Text.IndexOf($phrase, [System.StringComparison]::OrdinalIgnoreCase) | Should -Be -1
     }
@@ -433,7 +421,11 @@ Describe 'Junk files: a category total is impossible without the per-row split' 
             Format-ReviewSection -Section $Section -Width 100 -Colour $false
         }
         $text = ($lines -join "`n")
-        $text | Should -Not -Match '\d+(\.\d+)?\s*(bytes|KB|MB|GB)'
+        # Both spellings. P5-C3 changed the labels from KB/MB/GB to the binary
+        # KiB/MiB/GiB the divisors always meant; on a NEGATIVE assertion keeping
+        # the old three as well only widens what is forbidden, and it is the
+        # spelling a regression would print.
+        $text | Should -Not -Match '\d+(\.\d+)?\s*(bytes|KiB|MiB|GiB|KB|MB|GB)'
         $text | Should -Match 'No location holds anything'
     }
 
@@ -450,7 +442,10 @@ Describe 'Junk files: a category total is impossible without the per-row split' 
         })))
 
         $text = ($script:Lines -join "`n")
-        $text | Should -Not -Match '93\.1 GB' -Because 'that is the scan-wide figure the rows do not account for'
+        # 93.1 is the fixture's TotalEligibleBytes rendered by Format-JunkSize;
+        # the unit moved to GiB in P5-C3, and the bare number is forbidden with
+        # either unit after it so this cannot go quietly vacuous again.
+        $text | Should -Not -Match '93\.1 Gi?B' -Because 'that is the scan-wide figure the rows do not account for'
     }
 
     It 'prints the total only after every row' {
@@ -486,7 +481,10 @@ Describe 'Junk files: a category total is impossible without the per-row split' 
         $rows.Count | Should -Be 3
         foreach ($row in $rows) {
             @($row.Cell).Count | Should -Be 6
-            $row.Cell[2] | Should -Match '(bytes|KB|MB|GB)'
+            # Binary units, spelled as binary units -- see Format-JunkSize. The
+            # decimal spellings are NOT accepted here: this is the positive
+            # assertion, and accepting both would let the labels drift back.
+            $row.Cell[2] | Should -Match '(bytes|KiB|MiB|GiB)'
             $row.Cell[4] | Should -Match '^\d+ days$'
         }
     }

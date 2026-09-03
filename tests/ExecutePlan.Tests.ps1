@@ -100,35 +100,14 @@ BeforeAll {
         } | Sort-Object -Unique
     )
 
-    # ---- the forbidden benefit-claim phrases, READ OUT OF THE EXISTING TESTS -
+    # ---- the forbidden benefit-claim phrases -------------------------------
     #
-    # The same extractor tests\ReviewScreen.Tests.ps1 and tests\ActionLog.Tests.ps1
-    # use: the lists live in the two suites that own them and are lifted out by
-    # AST at run time, so anything added to either is picked up here without an
-    # edit.
-    function Get-ForbiddenPhraseFromSuite {
-        param([Parameter(Mandatory)] [string] $Path)
-
-        $tokens = $null
-        $errors = $null
-        $parsed = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $errors)
-
-        $found = New-Object System.Collections.Generic.List[string]
-        foreach ($array in @($parsed.FindAll({
-            param($node) $node -is [System.Management.Automation.Language.ArrayLiteralAst]
-        }, $true))) {
-            $values = @($array.Elements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] } | ForEach-Object { $_.Value })
-            if (@($values).Count -ne @($array.Elements).Count) { continue }
-            if (@($values | Where-Object { $_ -eq 'free up' }).Count -lt 1) { continue }
-            foreach ($value in $values) { $null = $found.Add($value) }
-        }
-        [string[]] @($found.ToArray() | Sort-Object -Unique)
-    }
-
-    $script:ForbiddenPhrase = [string[]] @(@(
-        @(Get-ForbiddenPhraseFromSuite -Path (Join-Path $PSScriptRoot 'DispatcherJunkAmendment.Tests.ps1')) +
-        @(Get-ForbiddenPhraseFromSuite -Path (Join-Path $PSScriptRoot 'RemovalDispatcher.Tests.ps1'))
-    ) | Sort-Object -Unique)
+    # One file, read by every suite that enforces them -- tests\ForbiddenPhrase.ps1,
+    # P5-C3 change 5. It replaces the AST extractor this file, ActionLog and
+    # ReviewScreen each carried a copy of, which existed only because the lists
+    # lived in two other suites and disagreed.
+    . (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+    $script:ForbiddenPhrase = Get-OptimizerForbiddenPhrase
 
     # ---- fixtures ----------------------------------------------------------
 
@@ -1145,7 +1124,7 @@ Describe 'Invoke-OptimizerExecutionPlan: all of them or none of them' {
             @((Invoke-ExecutionScenario -Ledger (New-LedgerPath) -Plan @($one) -LiveStart $live).Written)
         ) -join "`n"
 
-        $script:ForbiddenPhrase.Count | Should -BeGreaterThan 4
+        $script:ForbiddenPhrase.Count | Should -BeGreaterOrEqual 10 -Because "ten phrases is the union tests\ForbiddenPhrase.ps1 ships; a shorter list means something silently stopped being enforced"
         $script:ForbiddenPhrase | Should -Contain 'free up'
 
         $transcript.Length | Should -BeGreaterThan 200

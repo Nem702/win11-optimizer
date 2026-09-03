@@ -25,6 +25,12 @@
     Run:  .\tests\Invoke-Tests.ps1        (and -On51, which is not optional)
 #>
 
+# Discovery-time, for the -ForEach that makes one test per forbidden phrase.
+# Pester runs a file's top level during discovery and its BeforeAll during the
+# run, in separate scopes, so the list is dot-sourced in both.
+. (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+$ForbiddenPhrase = Get-OptimizerForbiddenPhrase
+
 BeforeAll {
     $script:RepoRoot      = Split-Path -Path $PSScriptRoot -Parent
     $script:EngineRoot    = Join-Path $script:RepoRoot 'src\Win11Optimizer.Engine'
@@ -108,37 +114,16 @@ BeforeAll {
         }, $true))
     }
 
-    # ---- the forbidden benefit-claim phrases, READ OUT OF THE EXISTING TESTS -
+    # ---- the forbidden benefit-claim phrases -------------------------------
     #
-    # The prompt says reuse the list Find-JunkFileLocation's evidence is already
-    # held to rather than writing a second one, and there is no shared file to
-    # import -- so the lists are lifted out of the two suites that own them, by
-    # AST, at run time. Anything added to either list from now on is picked up
-    # here without an edit. There are in fact TWO lists and they differ; this
-    # takes the union, and the report says so.
-    function Get-ForbiddenPhraseFromSuite {
-        param([Parameter(Mandatory)] [string] $Path)
-
-        $tokens = $null
-        $errors = $null
-        $parsed = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $errors)
-
-        $found = New-Object System.Collections.Generic.List[string]
-        foreach ($array in @($parsed.FindAll({
-            param($node) $node -is [System.Management.Automation.Language.ArrayLiteralAst]
-        }, $true))) {
-            $values = @($array.Elements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] } | ForEach-Object { $_.Value })
-            if (@($values).Count -ne @($array.Elements).Count) { continue }
-            if (@($values | Where-Object { $_ -eq 'free up' }).Count -lt 1) { continue }
-            foreach ($value in $values) { $null = $found.Add($value) }
-        }
-        [string[]] @($found.ToArray() | Sort-Object -Unique)
-    }
-
-    $script:ForbiddenPhrase = [string[]] @(@(
-        @(Get-ForbiddenPhraseFromSuite -Path (Join-Path $PSScriptRoot 'DispatcherJunkAmendment.Tests.ps1')) +
-        @(Get-ForbiddenPhraseFromSuite -Path (Join-Path $PSScriptRoot 'RemovalDispatcher.Tests.ps1'))
-    ) | Sort-Object -Unique)
+    # One file, read by every suite that enforces them -- tests\ForbiddenPhrase.ps1,
+    # P5-C3 change 5. Until then the lists lived in two other suites, differed,
+    # and were lifted out of both by AST here to take the union. The property
+    # that made that worth doing survives the move and is now the obvious one: a
+    # phrase added to the shared file is enforced here on the next run, with no
+    # edit to this file.
+    . (Join-Path $PSScriptRoot 'ForbiddenPhrase.ps1')
+    $script:ForbiddenPhrase = Get-OptimizerForbiddenPhrase
 
     # ---- fixtures ----------------------------------------------------------
 
@@ -1430,20 +1415,18 @@ Describe 'Get-OptimizerRunReceipt: a receipt, not a benchmark' {
         $script:ReceiptText | Should -Match 'cannot say whether they happened'
     }
 
-    It 'never says "<_>"' -ForEach @(
-        'free up', 'frees up', 'freed up', 'reclaim ', 'will reclaim',
-        'space you will', 'will save', 'you will get back', 'speed up', 'run faster'
-    ) {
-        # The same phrases the junk detector's evidence is already held to, taken
-        # out of those suites by AST -- the -ForEach list here is the readable
-        # copy, and the assertion below is against the extracted one, so a phrase
-        # added to either existing list is enforced here without an edit.
+    It 'never says "<_>"' -ForEach $ForbiddenPhrase {
+        # The same phrases the junk detector's evidence is already held to, from
+        # tests\ForbiddenPhrase.ps1. This used to be a readable copy written out
+        # by hand beside an extracted one; there is one list now, and this gives
+        # a named failing test per phrase rather than one loop that stops at the
+        # first.
         $phrase = $_
         $script:ReceiptText.IndexOf($phrase, [System.StringComparison]::OrdinalIgnoreCase) | Should -Be -1
     }
 
     It 'never says anything on the extracted list either, and the list is not empty' {
-        @($script:ForbiddenPhrase).Count | Should -BeGreaterThan 4
+        @($script:ForbiddenPhrase).Count | Should -BeGreaterOrEqual 10 -Because "ten phrases is the union tests\ForbiddenPhrase.ps1 ships; a shorter list means something silently stopped being enforced"
         $script:ForbiddenPhrase | Should -Contain 'free up'
         foreach ($phrase in $script:ForbiddenPhrase) {
             $script:ReceiptText.IndexOf($phrase, [System.StringComparison]::OrdinalIgnoreCase) |
