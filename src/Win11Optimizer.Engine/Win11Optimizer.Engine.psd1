@@ -68,6 +68,12 @@
         'Get-OptimizerRunReceipt'
         'New-OptimizerRestorePoint'
 
+        # P5-C2 - Q21: the ledger's per-machine home and the ACL check that
+        # guards it (Removal/ActionLog.ps1).
+        'Get-OptimizerActionLogRoot'
+        'Test-OptimizerLedgerFolder'
+        'Assert-OptimizerLedgerFolder'
+
         # P3-C3 - the executor (Removal/Executor.ps1). The first code here that
         # changes the machine on purpose, and it changes one thing: the startup
         # type of one service. Every other route is refused, with a reason.

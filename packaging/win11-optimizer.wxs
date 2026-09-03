@@ -1,0 +1,366 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    win11-optimizer.wxs - chunk P5-C2, part B: the installer.
+
+    WiX v3. candle compiles this to a .wixobj, light links that to a .msi, and
+    packaging\Build-Msi.ps1 is the only supported way to run either - it finds
+    the toolset, passes the two preprocessor variables this file needs, and
+    stops with an explanation if WiX is not installed. There is no fallback
+    packager and no hand-rolled .msi: a .msi built by anything other than
+    Windows Installer's own tooling is not a .msi, it is a file with the wrong
+    extension on it.
+
+    Preprocessor variables (both supplied by Build-Msi.ps1):
+        SourceRoot      the repository root, with no trailing separator
+        ProductVersion  three-part version, e.g. 0.1.0
+
+    WHAT THIS INSTALLS, and it is a short list on purpose:
+
+      1. The engine module, whole, to
+             C:\Program Files\win11-optimizer\src\Win11Optimizer.Engine\
+         so that
+             Import-Module 'C:\Program Files\win11-optimizer\src\Win11Optimizer.Engine'
+         works with no path fixing and no PSModulePath change.
+
+      2. Five reference documents to C:\Program Files\win11-optimizer\docs\.
+
+      3. One Start Menu shortcut, running Windows PowerShell 5.1 against
+         App\Bootstrap.ps1. It does NOT ask for elevation - the menu asks, per
+         choice, when a choice needs it.
+
+      4. %ProgramData%\win11-optimizer, created with an explicit ACL and left
+         behind on uninstall. This is Q21 and it is the reason this chunk is an
+         installer at all: nothing but an installer can set that ACL, and
+         without the ACL moving the ledger out of the repo makes it FORGEABLE
+         rather than safe. Removal\ActionLog.ps1 checks the ACL at run time and
+         refuses to write a ledger into a folder that does not have it.
+
+    WHAT IT LEAVES OUT: tests\, docs\handoff\, logs\, .git\, .gitignore,
+    LICENSE.md, README.md and every hidden file. A test asserts that the file
+    list here is EXACTLY the engine folder's contents plus those five documents,
+    in both directions - a source file added to the module and not added here
+    would otherwise install a module that cannot load, and the first person to
+    find out would be a user.
+
+    The engine folder ships WHOLE - .psm1 and Data\*.json included - and not
+    just the .ps1 and .psd1 files the prompt names. The .psm1 IS the module and
+    the three .json files are the curated lists every detector loads at startup;
+    an install without them is an install that throws on its first scan.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <?ifndef ProductVersion ?>
+  <?define ProductVersion = "0.1.0" ?>
+  <?endif ?>
+
+  <!-- The ACL Q21 asks for, as one SDDL string, applied to
+       %ProgramData%\win11-optimizer by MsiLockPermissionsEx.
+
+         O:BA                    owner: Administrators
+         D:P                     inheritance OFF - and this is the whole point.
+                                 %ProgramData%'s own entries grant CREATOR OWNER
+                                 full control of what is created below it and let
+                                 Users create things there, so a folder that
+                                 merely inherits leaves the ledger appendable and
+                                 deletable by a standard user.
+         (A;OICI;FA;;;BA)        Administrators: Full Control, inherited by
+                                 subfolders and files
+         (A;OICI;FA;;;SY)        SYSTEM: Full Control, likewise
+         (A;OICI;0x1200a9;;;BU)  Users: Read and Execute, likewise. 0x1200a9 is
+                                 FILE_GENERIC_READ | FILE_GENERIC_EXECUTE.
+
+       SIDs, not names: BA/SY/BU are the same on every Windows in every language,
+       and "Administrators" is not. -->
+  <?define LedgerSddl = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)" ?>
+
+  <Product Id="*"
+           Name="win11-optimizer"
+           Language="1033"
+           Version="$(var.ProductVersion)"
+           Manufacturer="win11-optimizer"
+           UpgradeCode="{95BED497-2E92-42B8-80D8-6E479D68FCAB}">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="win11-optimizer - a console bloatware-removal tool for Windows 11"
+             Comments="Installs the engine module, a Start Menu shortcut and the machine-wide action ledger folder." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed. Uninstall it first." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- InstallerVersion 500 is Windows Installer 5.0, which is what
+         MsiLockPermissionsEx (the ACL above) needs. Windows 11 ships it. -->
+    <Condition Message="win11-optimizer needs Windows 7 or later.">
+      <![CDATA[Installed OR (VersionNT >= 601)]]>
+    </Condition>
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/win11-optimizer" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="win11-optimizer">
+          <Directory Id="SrcFolder" Name="src">
+            <Directory Id="EngineFolder" Name="Win11Optimizer.Engine">
+              <Directory Id="EngineAppFolder"       Name="App" />
+              <Directory Id="EngineDataFolder"      Name="Data" />
+              <Directory Id="EngineDetectorsFolder" Name="Detectors" />
+              <Directory Id="EngineRemovalFolder"   Name="Removal" />
+              <Directory Id="EngineReviewFolder"    Name="Review" />
+              <Directory Id="EngineSharedFolder"    Name="Shared" />
+              <Directory Id="EngineSupportFolder"   Name="Support" />
+            </Directory>
+          </Directory>
+          <Directory Id="DocsFolder" Name="docs" />
+        </Directory>
+      </Directory>
+
+      <!-- %ProgramData%. CommonAppDataFolder is Windows Installer's own name
+           for it, so this resolves correctly on a machine whose ProgramData has
+           been moved off C:. -->
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="LedgerFolder" Name="win11-optimizer" />
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder" />
+
+    </Directory>
+
+    <Feature Id="ProductFeature" Title="win11-optimizer" Level="1" Absent="disallow">
+      <ComponentGroupRef Id="CG.Engine.Root" />
+      <ComponentGroupRef Id="CG.Engine.App" />
+      <ComponentGroupRef Id="CG.Engine.Data" />
+      <ComponentGroupRef Id="CG.Engine.Detectors" />
+      <ComponentGroupRef Id="CG.Engine.Removal" />
+      <ComponentGroupRef Id="CG.Engine.Review" />
+      <ComponentGroupRef Id="CG.Engine.Shared" />
+      <ComponentGroupRef Id="CG.Engine.Support" />
+      <ComponentGroupRef Id="CG.Docs" />
+      <ComponentRef Id="C_StartMenuShortcut" />
+      <ComponentRef Id="C_LedgerFolder" />
+    </Feature>
+
+  </Product>
+
+  <Fragment>
+
+    <ComponentGroup Id="CG.Engine.Root" Directory="EngineFolder">
+      <Component Id="C_Win11Optimizer_Engine_psd1" Guid="*">
+        <File Id="F_Win11Optimizer_Engine_psd1" Name="Win11Optimizer.Engine.psd1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Win11Optimizer.Engine.psd1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Win11Optimizer_Engine_psm1" Guid="*">
+        <File Id="F_Win11Optimizer_Engine_psm1" Name="Win11Optimizer.Engine.psm1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Win11Optimizer.Engine.psm1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.App" Directory="EngineAppFolder">
+      <Component Id="C_App_Bootstrap_ps1" Guid="*">
+        <File Id="F_App_Bootstrap_ps1" Name="Bootstrap.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\App\Bootstrap.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_App_Entry_ps1" Guid="*">
+        <File Id="F_App_Entry_ps1" Name="Entry.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\App\Entry.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_App_Menu_ps1" Guid="*">
+        <File Id="F_App_Menu_ps1" Name="Menu.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\App\Menu.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.Data" Directory="EngineDataFolder">
+      <Component Id="C_Data_junk_locations_json" Guid="*">
+        <File Id="F_Data_junk_locations_json" Name="junk-locations.json" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Data\junk-locations.json" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Data_known_bloatware_json" Guid="*">
+        <File Id="F_Data_known_bloatware_json" Name="known-bloatware.json" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Data\known-bloatware.json" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Data_known_startup_items_json" Guid="*">
+        <File Id="F_Data_known_startup_items_json" Name="known-startup-items.json" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Data\known-startup-items.json" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Data_README_md" Guid="*">
+        <File Id="F_Data_README_md" Name="README.md" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Data\README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Data_unused_app_exclusions_json" Guid="*">
+        <File Id="F_Data_unused_app_exclusions_json" Name="unused-app-exclusions.json" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Data\unused-app-exclusions.json" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.Detectors" Directory="EngineDetectorsFolder">
+      <Component Id="C_Detectors_JunkFiles_ps1" Guid="*">
+        <File Id="F_Detectors_JunkFiles_ps1" Name="JunkFiles.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Detectors\JunkFiles.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Detectors_OemBloatware_ps1" Guid="*">
+        <File Id="F_Detectors_OemBloatware_ps1" Name="OemBloatware.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Detectors\OemBloatware.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Detectors_README_md" Guid="*">
+        <File Id="F_Detectors_README_md" Name="README.md" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Detectors\README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Detectors_StartupItems_ps1" Guid="*">
+        <File Id="F_Detectors_StartupItems_ps1" Name="StartupItems.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Detectors\StartupItems.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Detectors_UnusedApps_ps1" Guid="*">
+        <File Id="F_Detectors_UnusedApps_ps1" Name="UnusedApps.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Detectors\UnusedApps.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.Removal" Directory="EngineRemovalFolder">
+      <Component Id="C_Removal_ActionLog_ps1" Guid="*">
+        <File Id="F_Removal_ActionLog_ps1" Name="ActionLog.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Removal\ActionLog.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Removal_Dispatcher_ps1" Guid="*">
+        <File Id="F_Removal_Dispatcher_ps1" Name="Dispatcher.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Removal\Dispatcher.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Removal_Executor_ps1" Guid="*">
+        <File Id="F_Removal_Executor_ps1" Name="Executor.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Removal\Executor.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Removal_RestorePoint_ps1" Guid="*">
+        <File Id="F_Removal_RestorePoint_ps1" Name="RestorePoint.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Removal\RestorePoint.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.Review" Directory="EngineReviewFolder">
+      <Component Id="C_Review_Execute_ps1" Guid="*">
+        <File Id="F_Review_Execute_ps1" Name="Execute.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Review\Execute.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Review_Screen_ps1" Guid="*">
+        <File Id="F_Review_Screen_ps1" Name="Screen.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Review\Screen.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.Shared" Directory="EngineSharedFolder">
+      <Component Id="C_Shared_Inventory_ps1" Guid="*">
+        <File Id="F_Shared_Inventory_ps1" Name="Inventory.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Shared\Inventory.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    <ComponentGroup Id="CG.Engine.Support" Directory="EngineSupportFolder">
+      <Component Id="C_Support_Elevation_ps1" Guid="*">
+        <File Id="F_Support_Elevation_ps1" Name="Elevation.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Support\Elevation.ps1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="CG.Docs" Directory="DocsFolder">
+      <Component Id="C_docs_CHECKLIST_md" Guid="*">
+        <File Id="F_docs_CHECKLIST_md" Name="CHECKLIST.md" Source="$(var.SourceRoot)\docs\CHECKLIST.md" KeyPath="yes" />
+      </Component>
+      <Component Id="C_docs_PLAN_md" Guid="*">
+        <File Id="F_docs_PLAN_md" Name="PLAN.md" Source="$(var.SourceRoot)\docs\PLAN.md" KeyPath="yes" />
+      </Component>
+      <Component Id="C_docs_RESEARCH_md" Guid="*">
+        <File Id="F_docs_RESEARCH_md" Name="RESEARCH.md" Source="$(var.SourceRoot)\docs\RESEARCH.md" KeyPath="yes" />
+      </Component>
+      <Component Id="C_docs_REVIEW_md" Guid="*">
+        <File Id="F_docs_REVIEW_md" Name="REVIEW.md" Source="$(var.SourceRoot)\docs\REVIEW.md" KeyPath="yes" />
+      </Component>
+      <Component Id="C_docs_STATE_md" Guid="*">
+        <File Id="F_docs_STATE_md" Name="STATE.md" Source="$(var.SourceRoot)\docs\STATE.md" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- The Start Menu shortcut.
+
+         TARGET IS WINDOWS POWERSHELL 5.1, ALWAYS. It is the floor this project
+         is written to and the only shell guaranteed to be on the machine;
+         detecting PowerShell 7 and preferring it is future scope, and a
+         shortcut that silently picks a different shell than the one the test
+         suite last ran the menu on is not a small change.
+
+         [System64Folder] is C:\Windows\System32 for this x64 package, which is
+         where powershell.exe lives. Spelling it out as [WindowsFolder]System32
+         would be wrong for a 32-bit package - the file-system redirector sends
+         that to SysWOW64 - so it is named through the property that means what
+         it says.
+
+         IT RUNS Bootstrap.ps1, NOT Entry.ps1. A shortcut has no console to
+         report an import failure to, and Bootstrap.ps1 is Entry.ps1 with a
+         %TEMP% log file wrapped round it for exactly that case.
+
+         NO ELEVATION, deliberately. There is no elevation verb here and
+         none is wanted: a tool that demands administrator before it will even
+         list what it found teaches people to click through UAC. The menu asks
+         per choice, when a choice actually needs it.
+
+         WorkingDirectory is deliberately absent - "Start In" blank. Nothing in
+         the tool resolves a relative path, and a working directory is one more
+         thing that can be wrong. -->
+
+
+    <!-- %ProgramData%\win11-optimizer - the action ledger's folder, and Q21's
+         answer.
+
+         PERMANENT, AND THAT IS THE INTERESTING ATTRIBUTE. Uninstalling the tool
+         does not delete the record of what it did: a ledger is the only way to
+         answer "what happened to this PC, and can it be undone?", and the
+         moment somebody most wants that answer is right after they have
+         uninstalled something. The folder and its contents are left where they
+         are, readable by everyone, for a reinstall or for a person with a text
+         editor.
+
+         There is no file in this component: only the folder, with its ACL. The
+         ledger itself is created by the tool the first time it records
+         something, which is why the component's key path is the directory. -->
+    <DirectoryRef Id="LedgerFolder">
+      <Component Id="C_LedgerFolder"
+                 Guid="{18970A50-709F-475F-A448-5132441D3FA0}"
+                 Permanent="yes"
+                 KeyPath="yes">
+        <CreateFolder>
+          <!-- The CORE PermissionEx, not WixUtilExtension's. They are different
+               elements with the same name: this one writes the MsiLockPermissionsEx
+               table and takes an SDDL string, and util:PermissionEx is a custom
+               action that takes a user name and has no Sddl attribute at all.
+               candle says so plainly if you reach for the wrong one. -->
+          <PermissionEx Sddl="$(var.LedgerSddl)" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
+
+
+    <!-- The Start Menu shortcut.
+
+         TARGET IS WINDOWS POWERSHELL 5.1, ALWAYS. It is the floor this project
+         is written to and the only shell guaranteed to be on the machine;
+         detecting PowerShell 7 and preferring it is future scope, and a shortcut
+         that silently picks a different shell than the one the test suite last
+         ran the menu on is not a small change.
+
+         [System64Folder] is C:\Windows\System32 for this x64 package, which is
+         where powershell.exe lives. Spelling it out as [WindowsFolder]System32
+         would be wrong for a 32-bit package - the file-system redirector sends
+         that to SysWOW64 - so it is named through the property that means what
+         it says.
+
+         IT RUNS Bootstrap.ps1, NOT Entry.ps1. A shortcut has no console to
+         report an import failure to, and Bootstrap.ps1 is Entry.ps1 with a
+         %TEMP% log file wrapped round it for exactly that case.
+
+         NO ELEVATION, deliberately. There is no elevation verb here and none is
+         wanted: a tool that demands administrator before it will even list what
+         it found teaches people to click through UAC. The menu asks per choice,
+         when a choice actually needs it.
+
+         WorkingDirectory is deliberately absent - "Start In" blank. Nothing in
+         the tool resolves a relative path, and a working directory is one more
+         thing that can be wrong.
+
+         THE KEY PATH IS UNDER HKCU, AND THAT IS NOT A SLIP. A non-advertised
+         shortcut in the Start Menu is per-user data as far as Windows Installer
+         is concerned, and ICE38, ICE43 and ICE57 all fail a component that puts
+         one there with a per-machine key path. The .lnk still lands in the ALL
+         USERS Start Menu, because this package is perMachine and
+         ProgramMenuFolder resolves there; the HKCU value only tells the
+         installer whose copy of the shortcut to repair. The alternative was to
+         build with -sice:ICE38 -sice:ICE43 -sice:ICE57, and an installer that
+         links only with its checks switched off is not one to ship. -->
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="C_StartMenuShortcut" Guid="{66B49324-B32B-46B3-9685-40034F73892B}">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="win11-optimizer"
+                  Description="Find and remove Windows 11 bloatware, with a record of everything it does."
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -File &quot;[#F_App_Bootstrap_ps1]&quot;"
+                  Show="normal" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\win11-optimizer"
+                       Name="StartMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+</Wix>

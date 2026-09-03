@@ -50,6 +50,50 @@ $script:ActionLogFileName        = 'actions.jsonl'
 $script:ActionManifestFolderName = 'action-manifests'
 $script:ActionManifestSuffix     = '.files.jsonl'
 
+# ---- Q21: where the ledger lives, and who may write it (P5-C2) ------------
+#
+# It used to be the repo's logs\ folder, which was right while the tool ran from
+# source and wrong the moment it was installed: <module root>\..\..\logs under a
+# packaged build is inside %ProgramFiles%, where a non-elevated process cannot
+# write. The answer (docs\STATE.md Q21) is a per-machine store:
+#
+#     %ProgramData%\win11-optimizer\actions.jsonl
+#
+# machine-wide, readable by everyone, surviving profile deletion -- and writable
+# ONLY by administrators, which is the part that makes it worth moving to. Its
+# default DACL does not give us that: %ProgramData% grants CREATOR OWNER full
+# control over what is created under it and lets Users create things there, so a
+# folder simply created at that path leaves the ledger forgeable by a standard
+# user, which is worse than the repo folder it replaces.
+#
+# Only an installer can set that ACL, so this file does not set it and does not
+# create the folder. It CHECKS, and refuses to use a folder whose ACL does not
+# say what the installer was supposed to make it say. There is no fallback: a
+# ledger written somewhere else is a ledger nothing will read back.
+$script:LedgerFolderName = 'win11-optimizer'
+
+# The ledger root override, checked before WIN11OPTIMIZER_LOGROOT. Two variables
+# rather than one because the run log and the ledger no longer default to the
+# same place -- a run log is disposable and per-user, the ledger is neither --
+# and WIN11OPTIMIZER_LOGROOT still moves both, so every existing caller that
+# points the tool at a scratch folder keeps working unchanged.
+$script:LedgerRootVariable = 'WIN11OPTIMIZER_LEDGERROOT'
+$script:LogRootVariable    = 'WIN11OPTIMIZER_LOGROOT'
+
+# Compared BY SID, never by name: 'Administrators' and 'Users' are localized,
+# and a German or Polish Windows spells both of them differently.
+$script:LedgerAdministratorSid = 'S-1-5-32-544'
+$script:LedgerUserSid          = 'S-1-5-32-545'
+$script:LedgerSystemSid        = 'S-1-5-18'
+
+# Named refusals. A test asserts the error by id rather than by prose, and a
+# support call can quote one without anyone having to match wording.
+$script:LedgerFolderMissingErrorId    = 'Win11Optimizer.LedgerFolderMissing'
+$script:LedgerFolderAclErrorId        = 'Win11Optimizer.LedgerFolderAcl'
+$script:LedgerFolderUnreadableErrorId = 'Win11Optimizer.LedgerFolderUnreadable'
+
+$script:LedgerFolderReportTypeName = 'Win11Optimizer.LedgerFolderReport'
+
 # The ledger IS versioned, and unlike the data files' schemaVersion the reader
 # actually reads it. See the report: a curated list is loaded by the same build
 # that ships it, so a version it ignores costs nothing; a ledger is read back by
@@ -529,6 +573,370 @@ function ConvertTo-OptimizerActionPlanHeader {
 
 #endregion
 
+#region Public: where the ledger lives, and whether it may be used
+
+function Get-OptimizerProgramDataRoot {
+    <#
+    .SYNOPSIS
+        Returns %ProgramData%.
+
+    .DESCRIPTION
+        The environment variable first, the CommonApplicationData known folder
+        second. The variable is read FIRST on purpose: it is what Windows, every
+        installer and every administrator means by "ProgramData", and it lets a
+        test stand a whole ProgramData tree up in a temp folder and exercise the
+        real default path resolution without going anywhere near the real one.
+        The known folder is the fallback for a process started with a scrubbed
+        environment block.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $fromEnvironment = [Environment]::GetEnvironmentVariable('ProgramData')
+    if (-not [string]::IsNullOrWhiteSpace($fromEnvironment)) { return $fromEnvironment }
+
+    [Environment]::GetFolderPath('CommonApplicationData')
+}
+
+function Get-OptimizerActionLogRoot {
+    <#
+    .SYNOPSIS
+        Returns the folder the append-only action ledger lives in.
+
+    .DESCRIPTION
+        In order:
+
+          1. WIN11OPTIMIZER_LEDGERROOT, if set. Moves the ledger and nothing else.
+          2. WIN11OPTIMIZER_LOGROOT, if set. Still moves BOTH the run log and the
+             ledger, so every caller that already points this tool at a scratch
+             folder keeps working exactly as it did.
+          3. %ProgramData%\win11-optimizer -- the packaged default, and the one
+             the installer creates with an explicit ACL.
+
+        This is no longer Get-OptimizerLogRoot's answer by default, and the split
+        is deliberate: a run log records a scan session, is disposable and is
+        per-user, so it belongs under %LOCALAPPDATA% where any user can write it.
+        The ledger records changes to the machine, is never rotated, and must be
+        readable from another administrator's account months later, so it belongs
+        in one per-machine place that a standard user cannot write to.
+
+        DOES NOT CREATE THE FOLDER. Only the installer does.
+
+    .EXAMPLE
+        Get-OptimizerActionLogRoot
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $ledgerOverride = [Environment]::GetEnvironmentVariable($script:LedgerRootVariable)
+    if (-not [string]::IsNullOrWhiteSpace($ledgerOverride)) { return $ledgerOverride }
+
+    $logOverride = [Environment]::GetEnvironmentVariable($script:LogRootVariable)
+    if (-not [string]::IsNullOrWhiteSpace($logOverride)) { return $logOverride }
+
+    Join-Path -Path (Get-OptimizerProgramDataRoot) -ChildPath $script:LedgerFolderName
+}
+
+function Get-OptimizerComparablePath {
+    <#
+    .SYNOPSIS
+        Normalizes a path enough to compare two of them.
+
+    .DESCRIPTION
+        Full path, no trailing separator. Nothing here touches the file system,
+        so a path that is not there normalizes exactly like one that is -- which
+        matters, because the first question asked of the ledger folder is whether
+        it exists.
+
+    .PARAMETER Path
+        The path to normalize.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+
+    $full = $Path
+    try { $full = [System.IO.Path]::GetFullPath($Path) } catch { $full = $Path }
+
+    $full.TrimEnd([char] '\', [char] '/')
+}
+
+function Test-OptimizerLedgerAcl {
+    <#
+    .SYNOPSIS
+        Returns the problems with a ledger folder's ACL, or an empty list.
+
+    .DESCRIPTION
+        THREE GRANTS, AND NOTHING ELSE THAT CAN WRITE:
+
+          Administrators  Modify or better
+          SYSTEM          Modify or better
+          Users           Read or better
+
+        and no other principal holding any write-shaped right at all. That last
+        clause is the one that matters and the one a hand-made folder fails:
+        %ProgramData%'s inherited entries give CREATOR OWNER full control over
+        everything created under it and let Users create things there, so a
+        folder made at the right path with New-Item passes a naive "can
+        administrators write?" check and still leaves the ledger forgeable.
+
+        Read by EFFECT rather than by flag -- allow minus deny, per SID, counting
+        inherit-only entries, which govern the ledger FILE even when they grant
+        nothing on the folder itself. An ACL that produces the right effect by an
+        unexpected route passes; one that produces the wrong effect through a
+        correct-looking route does not.
+
+        Identities are compared as SIDs, because 'Administrators' and 'Users' are
+        localized names and a SID is not. They are ASKED FOR as SIDs too --
+        GetAccessRules with a SecurityIdentifier target type -- rather than taken
+        as names and translated afterwards: translating a SID that no longer
+        resolves to an account throws, and an entry for a deleted account is
+        still an entry that grants access.
+
+        GetAccessRules, and not the .Access property: .Access is a PowerShell
+        convenience that Get-Acl's output carries and a descriptor built in
+        memory does not, and a check that only works on one of the two cannot be
+        tested without touching a real folder's real ACL.
+
+    .PARAMETER Acl
+        The security descriptor, as Get-Acl returns it.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $Acl
+    )
+
+    $modifyMask = [int] [System.Security.AccessControl.FileSystemRights]::Modify
+    $readMask   = [int] [System.Security.AccessControl.FileSystemRights]::Read
+    $writeMask  = [int] (
+        [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+        [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+        [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [System.Security.AccessControl.FileSystemRights]::TakeOwnership)
+
+    $allowed = @{}
+    $refused = @{}
+    $label   = @{}
+
+    $rule = @($Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+
+    foreach ($entry in $rule) {
+        $sid = [string] $entry.IdentityReference
+
+        if (-not $label.ContainsKey($sid)) {
+            # A readable name for the message only. An account this machine can
+            # no longer resolve keeps its SID, which is still the truth about it.
+            $name = $sid
+            try { $name = [string] $entry.IdentityReference.Translate([System.Security.Principal.NTAccount]).Value }
+            catch { $name = $sid }
+            $label[$sid] = $name
+        }
+
+        $rights = [int] $entry.FileSystemRights
+        if ($entry.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+            $already = [int] $(if ($allowed.ContainsKey($sid)) { $allowed[$sid] } else { 0 })
+            $allowed[$sid] = $already -bor $rights
+        }
+        else {
+            $already = [int] $(if ($refused.ContainsKey($sid)) { $refused[$sid] } else { 0 })
+            $refused[$sid] = $already -bor $rights
+        }
+    }
+
+    $effective = @{}
+    foreach ($sid in @($allowed.Keys)) {
+        $off = [int] $(if ($refused.ContainsKey($sid)) { $refused[$sid] } else { 0 })
+        $effective[$sid] = [int] ($allowed[$sid] -band (-bnot $off))
+    }
+
+    $problem = New-Object System.Collections.Generic.List[string]
+
+    foreach ($required in @(
+        [pscustomobject]@{ Sid = $script:LedgerAdministratorSid; Name = 'Administrators'; Mask = $modifyMask; Grant = 'Modify' }
+        [pscustomobject]@{ Sid = $script:LedgerSystemSid;        Name = 'SYSTEM';         Mask = $modifyMask; Grant = 'Modify' }
+        [pscustomobject]@{ Sid = $script:LedgerUserSid;          Name = 'Users';          Mask = $readMask;   Grant = 'Read' }
+    )) {
+        $granted = [int] $(if ($effective.ContainsKey($required.Sid)) { $effective[$required.Sid] } else { 0 })
+        if (($granted -band $required.Mask) -ne $required.Mask) {
+            $null = $problem.Add("$($required.Name) ($($required.Sid)) is not granted $($required.Grant)")
+        }
+    }
+
+    foreach ($sid in @($effective.Keys | Sort-Object)) {
+        if ($sid -eq $script:LedgerAdministratorSid) { continue }
+        if ($sid -eq $script:LedgerSystemSid) { continue }
+        if (($effective[$sid] -band $writeMask) -ne 0) {
+            $null = $problem.Add("$($label[$sid]) ($sid) can write here, and only Administrators and SYSTEM may")
+        }
+    }
+
+    [string[]] @($problem.ToArray())
+}
+
+function Test-OptimizerLedgerFolder {
+    <#
+    .SYNOPSIS
+        Reports whether the ledger folder is one this tool may write to.
+
+    .DESCRIPTION
+        THE CHECK ONLY APPLIES TO A PER-MACHINE LEDGER. A ledger anywhere else --
+        a test's scratch folder, a developer's WIN11OPTIMIZER_LOGROOT -- is
+        reported usable without any ACL being read, because the ACL is a claim
+        about %ProgramData% specifically: that a standard user can read the record
+        of what was done to this machine and cannot edit it. Nothing outside
+        %ProgramData% is making that claim.
+
+        Returns a report and never throws. The caller that wants a refusal calls
+        Assert-OptimizerLedgerFolder; a caller that wants to warn at startup
+        without stopping prints $report.Problem and carries on.
+
+    .PARAMETER Path
+        The folder to check. Defaults to Get-OptimizerActionLogRoot.
+
+    .EXAMPLE
+        (Test-OptimizerLedgerFolder).IsUsable
+
+    .EXAMPLE
+        Test-OptimizerLedgerFolder | Select-Object -ExpandProperty Problem
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string] $Path
+    )
+
+    $folder = $(if ($PSBoundParameters.ContainsKey('Path')) { $Path } else { Get-OptimizerActionLogRoot })
+
+    $programData = Get-OptimizerComparablePath -Path (Get-OptimizerProgramDataRoot)
+    $comparable  = Get-OptimizerComparablePath -Path $folder
+
+    $isPerMachine = $false
+    if (-not [string]::IsNullOrWhiteSpace($programData) -and -not [string]::IsNullOrWhiteSpace($comparable)) {
+        $isPerMachine = $comparable.Equals($programData, [System.StringComparison]::OrdinalIgnoreCase) -or
+                        $comparable.StartsWith($programData + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    $problem = New-Object System.Collections.Generic.List[string]
+    $exists  = [bool] (Test-Path -LiteralPath $folder -PathType Container)
+    $failure = ''
+
+    if ($isPerMachine) {
+        if (-not $exists) {
+            $failure = $script:LedgerFolderMissingErrorId
+            $null = $problem.Add('the folder is not there, and this tool does not create it')
+        }
+        else {
+            $acl = $null
+            try { $acl = Get-Acl -LiteralPath $folder -ErrorAction Stop }
+            catch {
+                $inner = Get-OptimizerInnerException -Exception $_.Exception
+                $failure = $script:LedgerFolderUnreadableErrorId
+                $null = $problem.Add("its permissions could not be read ($($inner.GetType().Name): $($inner.Message))")
+            }
+
+            if ($null -ne $acl) {
+                foreach ($found in @(Test-OptimizerLedgerAcl -Acl $acl)) { $null = $problem.Add($found) }
+                if ($problem.Count -gt 0) { $failure = $script:LedgerFolderAclErrorId }
+            }
+        }
+    }
+
+    $report = [pscustomobject][ordered]@{
+        Path         = [string] $folder
+        IsPerMachine = [bool] $isPerMachine
+        Exists       = [bool] $exists
+        IsUsable     = [bool] ($problem.Count -eq 0)
+        ErrorId      = [string] $failure
+        Problem      = [string[]] @($problem.ToArray())
+    }
+    $report.PSObject.TypeNames.Insert(0, $script:LedgerFolderReportTypeName)
+    $report
+}
+
+function Assert-OptimizerLedgerFolder {
+    <#
+    .SYNOPSIS
+        Throws a named error if the ledger folder is not one this tool may use.
+
+    .DESCRIPTION
+        THE POINT OF THIS FUNCTION IS THAT THERE IS NO FALLBACK. When the folder
+        is missing or its ACL is wrong the tool stops; it does not quietly write
+        the ledger to the old logs\ folder, or into the user's profile, or beside
+        the module. A ledger in an unexpected place is a ledger the next run will
+        not read back, which turns "here is everything this tool has done to this
+        PC" into a half-truth -- the exact failure the ledger exists to prevent.
+
+        The error carries an id -- Win11Optimizer.LedgerFolderMissing,
+        Win11Optimizer.LedgerFolderAcl or Win11Optimizer.LedgerFolderUnreadable --
+        so a caller and a test can tell the three apart without reading prose, and
+        a message that names the folder and spells out the ACL it should have,
+        because the person reading it is the person who has to fix it.
+
+        Silent when the ledger is not under %ProgramData%, and silent when the
+        folder is exactly right.
+
+    .PARAMETER Path
+        The folder to check. Defaults to Get-OptimizerActionLogRoot.
+
+    .EXAMPLE
+        Assert-OptimizerLedgerFolder
+    #>
+    [CmdletBinding()]
+    [OutputType([void])]
+    param(
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string] $Path
+    )
+
+    $report = $(if ($PSBoundParameters.ContainsKey('Path')) {
+        Test-OptimizerLedgerFolder -Path $Path
+    }
+    else {
+        Test-OptimizerLedgerFolder
+    })
+
+    if ($report.IsUsable) { return }
+
+    $fix = 'icacls "{0}" /inheritance:r /grant *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX' -f $report.Path
+
+    $message = @(
+        "The action ledger folder '$($report.Path)' cannot be used: $($report.Problem -join '; ')."
+        'The win11-optimizer installer creates that folder with an explicit ACL -- Administrators: Modify, SYSTEM: Modify, Users: Read, inheritance off -- because a ledger a standard user can append to or edit is not a record of anything.'
+        'Nothing has been recorded and nothing must be attempted.'
+        'There is no fallback location: this tool writes the ledger there or not at all.'
+        "Repair the install, or from an elevated prompt: $fix"
+    ) -join ' '
+
+    $record = New-Object System.Management.Automation.ErrorRecord(
+        (New-Object System.InvalidOperationException($message)),
+        $report.ErrorId,
+        [System.Management.Automation.ErrorCategory]::PermissionDenied,
+        $report.Path)
+
+    throw $record
+}
+
+#endregion
+
 #region Public: the ledger
 
 function Get-OptimizerActionLogPath {
@@ -537,12 +945,22 @@ function Get-OptimizerActionLogPath {
         Returns the path of the append-only action ledger.
 
     .DESCRIPTION
-        <log root>\actions.jsonl, where the log root is exactly the one
-        Get-OptimizerLogRoot returns -- same WIN11OPTIMIZER_LOGROOT override, no
-        second location mechanism.
+        <ledger root>\actions.jsonl, where the ledger root is exactly the one
+        Get-OptimizerActionLogRoot returns: %ProgramData%\win11-optimizer by
+        default, WIN11OPTIMIZER_LEDGERROOT or WIN11OPTIMIZER_LOGROOT when either
+        is set. One resolver, no second location mechanism.
 
-        DOES NOT CREATE THE FILE, and does not create the folder. Asking where the
-        ledger is must never be the thing that brings one into existence.
+        AMENDED BY P5-C2 (Q21). Until packaging this was the run log's folder,
+        which is the repo's logs\ folder, which is inside %ProgramFiles% once the
+        tool is installed and is not writable there by a standard user. The two
+        now default to different places on purpose -- see
+        Get-OptimizerActionLogRoot -- and WIN11OPTIMIZER_LOGROOT still moves both,
+        so a caller that already points this tool at a scratch folder is unaffected.
+
+        DOES NOT CREATE THE FILE, and does not create the folder, and does not
+        check the folder's ACL either: asking where the ledger is must never be
+        the thing that brings one into existence, and must never be the thing
+        that throws. Reading and writing check; asking does not.
 
         The ledger is DISTINCT from the per-run log Start-OptimizerLog writes and
         is not a replacement for it: a run log records a scan session and is
@@ -556,7 +974,7 @@ function Get-OptimizerActionLogPath {
     [OutputType([string])]
     param()
 
-    Join-Path -Path (Get-OptimizerLogRoot) -ChildPath $script:ActionLogFileName
+    Join-Path -Path (Get-OptimizerActionLogRoot) -ChildPath $script:ActionLogFileName
 }
 
 function Write-OptimizerAction {
@@ -700,6 +1118,14 @@ function Write-OptimizerAction {
         }
 
         $ledgerPath = $(if ($PSBoundParameters.ContainsKey('Path')) { $Path } else { Get-OptimizerActionLogPath })
+
+        # P5-C2 (Q21). BEFORE the Intent record, for the same reason the Intent
+        # record comes before the attempt: a caller that cannot record what it is
+        # about to do must not do it, and a ledger folder whose ACL lets a
+        # standard user edit it is a folder that cannot record anything. Silent
+        # unless the ledger is under %ProgramData%, so a scratch folder is
+        # unaffected; loud and specific when it is, with no fallback.
+        Assert-OptimizerLedgerFolder -Path (Split-Path -Path $ledgerPath -Parent)
 
         # $Reason = $null on a [string] parameter becomes '' -- PowerShell
         # re-applies the type constraint on assignment -- so anything that has to
@@ -914,6 +1340,13 @@ function Get-OptimizerActionLog {
     )
 
     $ledgerPath = $(if ($PSBoundParameters.ContainsKey('Path')) { $Path } else { Get-OptimizerActionLogPath })
+
+    # P5-C2 (Q21), and it runs BEFORE the "no ledger yet" branch below on purpose.
+    # A missing per-machine ledger folder and an empty ledger read back
+    # identically -- as "this tool has never done anything to this PC" -- and only
+    # one of those is true. The reader refuses rather than reporting a clean
+    # history it cannot vouch for.
+    Assert-OptimizerLedgerFolder -Path (Split-Path -Path $ledgerPath -Parent)
 
     if (-not (Test-Path -LiteralPath $ledgerPath)) {
         Write-Verbose "No action ledger at '$ledgerPath'. Nothing has been recorded on this machine by this tool."

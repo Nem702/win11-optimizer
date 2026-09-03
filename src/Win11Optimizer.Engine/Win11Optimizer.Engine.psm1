@@ -358,9 +358,23 @@ function Get-OptimizerLogRoot {
         Returns the folder run logs are written to.
 
     .DESCRIPTION
-        Defaults to the 'logs' folder at the repo root (two levels above this
-        module). Override with the WIN11OPTIMIZER_LOGROOT environment variable --
-        a packaged install will not sit in a repo working tree.
+        %LOCALAPPDATA%\win11-optimizer\logs. Override with the
+        WIN11OPTIMIZER_LOGROOT environment variable, which still moves the ledger
+        with it.
+
+        AMENDED BY P5-C2. It used to be the 'logs' folder two levels above this
+        module, which is the repo root while the tool runs from source and is
+        C:\Program Files\win11-optimizer once it is installed -- a folder the
+        first un-elevated scan cannot create and cannot write to, which would
+        have made the packaged tool fail on its own front page.
+
+        PER-USER, AND NOT THE LEDGER'S FOLDER ANY MORE. A run log records a scan
+        session: it is disposable, it is nobody else's business, and any user has
+        to be able to write one. The ledger records changes to the machine, is
+        never rotated, and has to be readable from another administrator's
+        account and writable from none of them -- so it lives in
+        %ProgramData%\win11-optimizer under an ACL the installer sets. See
+        Get-OptimizerActionLogRoot in Removal\ActionLog.ps1 and docs\STATE.md Q21.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -371,7 +385,17 @@ function Get-OptimizerLogRoot {
         return $override
     }
 
-    Join-Path -Path (Split-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -Parent) -ChildPath 'logs'
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        $localAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA')
+    }
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        # Nothing to fall back to but the temp folder, which at least exists and
+        # is writable. A run log that cannot be written is not worth throwing over.
+        $localAppData = [System.IO.Path]::GetTempPath()
+    }
+
+    Join-Path -Path (Join-Path -Path $localAppData -ChildPath 'win11-optimizer') -ChildPath 'logs'
 }
 
 function Start-OptimizerLog {
@@ -757,10 +781,12 @@ foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSSc
     . $optimizerSourceFile
 }
 
-# Entry.ps1 is EXCLUDED -- see the block comment above. It is the launcher, not
-# a source file, and dot-sourcing it here would re-enter Import-Module and open
-# the menu from inside the module's own import.
-foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'App') -Name 'App' -Exclude 'Entry.ps1')) {
+# Entry.ps1 and Bootstrap.ps1 are EXCLUDED -- see the block comment above. They
+# are the two launchers, not source files, and dot-sourcing either one here would
+# re-enter Import-Module and open the menu from inside the module's own import.
+# Bootstrap.ps1 joined the list in P5-C2: it is what the installed Start Menu
+# shortcut runs, and it is Entry.ps1 with a log file wrapped round it.
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'App') -Name 'App' -Exclude 'Entry.ps1', 'Bootstrap.ps1')) {
     . $optimizerSourceFile
 }
 
@@ -814,6 +840,12 @@ Export-ModuleMember -Function @(
     # its own log files and changes nothing about the machine.
     'Get-OptimizerActionLogPath'
     'Write-OptimizerAction'
+    # P5-C2 (Q21) - where that ledger lives now, and the check that refuses to
+    # use a per-machine folder whose ACL does not say what the installer was
+    # supposed to make it say. Reads permissions; sets none.
+    'Get-OptimizerActionLogRoot'
+    'Test-OptimizerLedgerFolder'
+    'Assert-OptimizerLedgerFolder'
     'Get-OptimizerActionLog'
     'Get-OptimizerRunReceipt'
 

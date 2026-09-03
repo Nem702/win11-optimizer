@@ -211,19 +211,41 @@ Describe 'P5-C1 the menu changes nothing itself -- a positive allowlist' {
 
 Describe 'P5-C1 the loader does not dot-source the launcher' {
 
-    It 'asks for exactly one exclusion, App\Entry.ps1, by name' {
+    It 'asks for its exclusions by name, on one -Exclude, starting with App\Entry.ps1' {
+        # AMENDED BY P5-C2. This It used to say "exactly one exclusion" and
+        # named only Entry.ps1, which was true of a build with one launcher in it
+        # and stopped being true when P5-C2 added App\Bootstrap.ps1 -- the file
+        # the installed shortcut runs, which imports the module exactly as
+        # Entry.ps1 does and must not be dot-sourced for exactly the same reason.
+        #
+        # What the count still asserts is the thing that mattered: ONE -Exclude
+        # in the whole loader. A second one would be a second list, and the
+        # second list is the one nobody looks at.
         $psm1 = [System.IO.File]::ReadAllText($script:ModulePath)
-        $psm1 | Should -Match "Get-OptimizerSourceFile[^\r\n]*'App'[^\r\n]*-Exclude\s+'Entry\.ps1'"
+        $psm1 | Should -Match "Get-OptimizerSourceFile[^\r\n]*'App'[^\r\n]*-Exclude\s+'Entry\.ps1',\s*'Bootstrap\.ps1'"
 
-        # One -Exclude in the whole loader. A second one would be a second file
-        # nobody is watching.
         @([regex]::Matches($psm1, '-Exclude\s+')).Count | Should -Be 1
+
+        # And the list is the launchers, all of them: every .ps1 in App\ that
+        # CALLS Import-Module is excluded, and nothing else is. Read from the
+        # AST, not grepped -- both launchers also name Import-Module in the
+        # comment explaining why they must not be dot-sourced, and a sentence
+        # about a command is not a call to it.
+        $launcher = @(Get-ChildItem -LiteralPath $script:AppFolder -Filter '*.ps1' | Where-Object {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref] $null, [ref] $null)
+            @($ast.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -eq 'Import-Module'
+            }, $true)).Count -gt 0
+        } | ForEach-Object { $_.Name } | Sort-Object)
+        $launcher | Should -Be @('Bootstrap.ps1', 'Entry.ps1')
     }
 
     It 'actually drops Entry.ps1 and keeps Menu.ps1' {
         $files = InModuleScope Win11Optimizer.Engine -Parameters @{ Folder = $script:AppFolder } {
             param($Folder)
-            Get-OptimizerSourceFile -Path $Folder -Name 'App' -Exclude 'Entry.ps1'
+            Get-OptimizerSourceFile -Path $Folder -Name 'App' -Exclude 'Entry.ps1', 'Bootstrap.ps1'
         }
 
         $leaf = @($files | ForEach-Object { [System.IO.Path]::GetFileName($_) })
