@@ -1,18 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    win11-optimizer.wxs - chunk P5-C2, part B: the installer.
+    win11-optimizer.wxs - the installer. Chunk P5-C2 part B, polished in P5-C4.
 
     WiX v3. candle compiles this to a .wixobj, light links that to a .msi, and
     packaging\Build-Msi.ps1 is the only supported way to run either - it finds
-    the toolset, passes the two preprocessor variables this file needs, and
+    the toolset, passes the three preprocessor variables this file needs, and
     stops with an explanation if WiX is not installed. There is no fallback
     packager and no hand-rolled .msi: a .msi built by anything other than
     Windows Installer's own tooling is not a .msi, it is a file with the wrong
     extension on it.
 
-    Preprocessor variables (both supplied by Build-Msi.ps1):
+    Preprocessor variables (all three supplied by Build-Msi.ps1):
         SourceRoot      the repository root, with no trailing separator
         ProductVersion  three-part version, e.g. 0.1.0
+        LicenseRtf      ABSOLUTE path to the generated licence .rtf. Generated
+                        into packaging\obj\ from LICENSE.md on every build and
+                        never committed, so the licence the installer shows
+                        cannot drift from the licence in the repository. It is
+                        absolute because a relative path here would resolve
+                        against the current directory rather than against this
+                        file.
+
+    Linking needs -ext WixUIExtension for the dialog set. Build-Msi.ps1 passes
+    it. Dropping it is not a quiet downgrade to no UI - light stops with
+    "error LGHT0094 : Unresolved reference to symbol 'Dialog:ErrorDlg'", one per
+    dialog, and produces no .msi at all.
 
     WHAT THIS INSTALLS, and it is a short list on purpose:
 
@@ -22,7 +34,8 @@
              Import-Module 'C:\Program Files\win11-optimizer\src\Win11Optimizer.Engine'
          works with no path fixing and no PSModulePath change.
 
-      2. Five reference documents to C:\Program Files\win11-optimizer\docs\.
+      2. LICENSE.md, README.md and USAGE.md to
+         C:\Program Files\win11-optimizer\docs\.
 
       3. One Start Menu shortcut, running Windows PowerShell 5.1 against
          App\Bootstrap.ps1. It does NOT ask for elevation - the menu asks, per
@@ -35,12 +48,23 @@
          rather than safe. Removal\ActionLog.ps1 checks the ACL at run time and
          refuses to write a ledger into a folder that does not have it.
 
-    WHAT IT LEAVES OUT: tests\, docs\handoff\, logs\, .git\, .gitignore,
-    LICENSE.md, README.md and every hidden file. A test asserts that the file
-    list here is EXACTLY the engine folder's contents plus those five documents,
-    in both directions - a source file added to the module and not added here
-    would otherwise install a module that cannot load, and the first person to
-    find out would be a user.
+    WHAT IT LEAVES OUT: tests\, the whole of docs\, logs\, .git\, .gitignore
+    and every hidden file. A test asserts that the file list here is
+    EXACTLY the engine folder's contents plus those three documents, in both
+    directions - a source file added to the module and not added here would
+    otherwise install a module that cannot load, and the first person to find
+    that out would be a user.
+
+    THE THREE DOCUMENTS ARE THE THREE A PERSON INSTALLING THIS CAN USE, and
+    LICENSE.md is there because Apache-2.0 4(a) says every recipient gets a copy
+    of the licence and shipping this .msi is distributing the Work. Until P5-C4
+    the package shipped docs\CHECKLIST.md, PLAN.md, RESEARCH.md, REVIEW.md and
+    STATE.md: the chunk board and the per-chunk research notes, of no use to
+    anybody who did not write them. STATE.md is also 91 KB of measured detail
+    about the machine this project was developed on - installed software,
+    service names, publisher strings - and it was being copied into Program
+    Files on every machine that installed the .msi. docs\ is gitignored, which
+    is a second reason those five were an odd thing to be shipping.
 
     The engine folder ships WHOLE - .psm1 and Data\*.json included - and not
     just the .ps1 and .psd1 files the prompt names. The .psm1 IS the module and
@@ -73,11 +97,14 @@
        and "Administrators" is not. -->
   <?define LedgerSddl = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)" ?>
 
+  <!-- MANUFACTURER IS THE PUBLISHER, NOT THE PRODUCT. It used to say
+       "win11-optimizer", so Add/Remove Programs read "win11-optimizer by
+       win11-optimizer" and the Publisher column was noise. -->
   <Product Id="*"
            Name="win11-optimizer"
            Language="1033"
            Version="$(var.ProductVersion)"
-           Manufacturer="win11-optimizer"
+           Manufacturer="Nem702"
            UpgradeCode="{95BED497-2E92-42B8-80D8-6E479D68FCAB}">
 
     <Package InstallerVersion="500"
@@ -95,8 +122,33 @@
       <![CDATA[Installed OR (VersionNT >= 601)]]>
     </Condition>
 
-    <Property Id="ARPNOMODIFY" Value="1" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/win11-optimizer" />
+    <!-- ARPNOMODIFY IS SET BY WixUI_Minimal, NOT HERE, and the duplication is
+         not allowed: a second <Property Id="ARPNOMODIFY"> in this file is a
+         duplicate-symbol error at link time. A test reads the property back out
+         of the built .msi so "it is still set" stays a checked claim rather
+         than something this comment asserts. -->
+
+    <!-- Add/Remove Programs' support link. It used to be
+         https://github.com/win11-optimizer, which is not a repository, not an
+         account and not anything else either: ARP renders it as a live link,
+         and the first person to click it got a 404. -->
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Nem702/win11-optimizer" />
+
+    <!-- The icon, declared once and used twice: here for Add/Remove Programs,
+         and on the Start Menu shortcut further down.
+
+         THE Id MUST END IN .ico. Windows Installer writes the Icon table's key
+         out as a file name when it extracts the icon into the installer cache,
+         and a key with no extension produces a cached file that Explorer will
+         not read as an icon - ARP then falls back to the generic box this
+         exists to replace.
+
+         The file carries 16, 24, 32, 48, 64, 128 and 256 px, so ARP's small
+         list icon and the Start Menu's larger one come out of the same file at
+         whatever size each asks for. It is a stream in the .msi, not an
+         installed file: nothing new lands in Program Files for it. -->
+    <Icon Id="win11optimizer.ico" SourceFile="$(var.SourceRoot)\packaging\win11-optimizer.ico" />
+    <Property Id="ARPPRODUCTICON" Value="win11optimizer.ico" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
 
@@ -141,6 +193,93 @@
       <ComponentRef Id="C_StartMenuShortcut" />
       <ComponentRef Id="C_LedgerFolder" />
     </Feature>
+
+    <!-- WiX's own WixUI_Minimal, unmodified. Its single first-run dialog is
+         WelcomeEulaDlg - the welcome page and the licence agreement in one -
+         and it renders whatever WixUILicenseRtf points at.
+
+         P5-C4 could not use it: with LICENSE.md empty there was no licence to
+         render and WelcomeEulaDlg would have shown WiX's PLACEHOLDER EULA, a
+         licence nobody wrote, displayed as though somebody had, and accepted by
+         everyone who installed this. So P5-C4 shipped a dialog set of its own,
+         WixUI_Minimal's dialogs with the licence page taken out, and wrote down
+         that it could all go the day LICENSE.md was filled in. It is filled in.
+         That fragment is gone and this is the line it said to put back.
+
+         WHAT COMES WITH THE LICENCE PAGE, and it is worth stating because a
+         previous chunk asserted the opposite: WelcomeEulaDlg has a Print
+         button, and WiX wires it to WixUIPrintEula - a DLL custom action in
+         WixUIExtension's own WixUIWixca binary stream. So the package now
+         carries TWO custom actions and a helper DLL where it carried one and
+         none. That is not avoidable while showing a licence page: every WiX
+         licence dialog has the same Print button. -->
+    <UIRef Id="WixUI_Minimal" />
+
+    <!-- The licence page's text. GENERATED FROM LICENSE.md ON EVERY BUILD, into
+         packaging\obj\, and never committed: a checked-in .rtf is a second copy
+         of the licence that can drift from the first, and the drift would be
+         invisible - the installer would show one licence and the file installed
+         beside it would say another. Build-Msi.ps1 does the conversion and
+         passes the path in as $(var.LicenseRtf). -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <!-- The finish page's two additions, both read by WiX's own ExitDlg.
+
+         WIXUI_EXITDIALOGOPTIONALTEXT and the checkbox between them answer the
+         complaint that the old silent install ended with no sign that anything
+         had happened or where the thing had gone.
+
+         The text is a literal. A [PROPERTY] reference here would print as
+         itself: ExitDlg formats its control text once, and the value this
+         property expands to is not formatted again. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="You will find win11-optimizer in the Start Menu." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch win11-optimizer" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+
+    <!-- THE ONLY CUSTOM ACTION IN THIS PACKAGE, and the only code the installer
+         runs that is not Windows Installer's own.
+
+         IT IS IN NO SEQUENCE TABLE. Its single caller is the ExitDialog Publish
+         in the dialog set below, so it runs when a person ticks a box and clicks
+         Finish, and at no other moment: nothing during the install executes it,
+         and a quiet install (msiexec /qn, which has no UI and therefore no
+         finish page) never reaches it at all.
+
+         Type 34 - a directory and a command line - so there is no helper DLL,
+         no Binary stream and no WixUtilExtension. The whole action is the text
+         below.
+
+         IT RUNS UNELEVATED, which is the same promise the Start Menu shortcut
+         makes. An immediate custom action published from a dialog runs in the
+         UI process, and for a perMachine package that process is the person's
+         own unelevated session - the elevated half of the install is a separate
+         process that finished before the finish page appeared.
+
+         asyncNoWait because this starts a console application the person is
+         about to use: waiting for it would leave the finish page on screen
+         until they quit the menu.
+
+         It runs Bootstrap.ps1 through Windows PowerShell 5.1, character for
+         character what the Start Menu shortcut runs, for the reasons written
+         out at the shortcut. -->
+    <CustomAction Id="CA.LaunchWin11Optimizer"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -File &quot;[#F_App_Bootstrap_ps1]&quot;"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+
+    <!-- The launch checkbox's one wire, and the only thing this file adds to
+         WixUI_Minimal. A <UI> in the Product merges into the dialog set rather
+         than replacing it, which is the whole reason a dialog set of our own is
+         no longer needed for this.
+
+         NOT Installed keeps it off the finish page on the way back out:
+         "Launch win11-optimizer" at the end of an uninstall would be a lie, and
+         the .lnk it points at is gone by then. -->
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="CA.LaunchWin11Optimizer" Order="1">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+    </UI>
 
   </Product>
 
@@ -232,51 +371,26 @@
       </Component>
     </ComponentGroup>
 
+    <!-- The three documents a person who installed this can use, and nothing
+         else. All three live at the repository root and all three are tracked;
+         the five that used to be here lived in docs\, which is gitignored.
+
+         LICENSE.md IS NOT OPTIONAL AND IS NOT THE LICENCE PAGE. Apache-2.0
+         4(a) requires giving every recipient of the Work a copy of the licence,
+         and shipping this .msi is distributing it. The licence page the
+         installer shows is a dialog somebody clicks past; the file is the copy
+         they keep. -->
     <ComponentGroup Id="CG.Docs" Directory="DocsFolder">
-      <Component Id="C_docs_CHECKLIST_md" Guid="*">
-        <File Id="F_docs_CHECKLIST_md" Name="CHECKLIST.md" Source="$(var.SourceRoot)\docs\CHECKLIST.md" KeyPath="yes" />
+      <Component Id="C_docs_LICENSE_md" Guid="*">
+        <File Id="F_docs_LICENSE_md" Name="LICENSE.md" Source="$(var.SourceRoot)\LICENSE.md" KeyPath="yes" />
       </Component>
-      <Component Id="C_docs_PLAN_md" Guid="*">
-        <File Id="F_docs_PLAN_md" Name="PLAN.md" Source="$(var.SourceRoot)\docs\PLAN.md" KeyPath="yes" />
+      <Component Id="C_docs_README_md" Guid="*">
+        <File Id="F_docs_README_md" Name="README.md" Source="$(var.SourceRoot)\README.md" KeyPath="yes" />
       </Component>
-      <Component Id="C_docs_RESEARCH_md" Guid="*">
-        <File Id="F_docs_RESEARCH_md" Name="RESEARCH.md" Source="$(var.SourceRoot)\docs\RESEARCH.md" KeyPath="yes" />
-      </Component>
-      <Component Id="C_docs_REVIEW_md" Guid="*">
-        <File Id="F_docs_REVIEW_md" Name="REVIEW.md" Source="$(var.SourceRoot)\docs\REVIEW.md" KeyPath="yes" />
-      </Component>
-      <Component Id="C_docs_STATE_md" Guid="*">
-        <File Id="F_docs_STATE_md" Name="STATE.md" Source="$(var.SourceRoot)\docs\STATE.md" KeyPath="yes" />
+      <Component Id="C_docs_USAGE_md" Guid="*">
+        <File Id="F_docs_USAGE_md" Name="USAGE.md" Source="$(var.SourceRoot)\USAGE.md" KeyPath="yes" />
       </Component>
     </ComponentGroup>
-
-    <!-- The Start Menu shortcut.
-
-         TARGET IS WINDOWS POWERSHELL 5.1, ALWAYS. It is the floor this project
-         is written to and the only shell guaranteed to be on the machine;
-         detecting PowerShell 7 and preferring it is future scope, and a
-         shortcut that silently picks a different shell than the one the test
-         suite last ran the menu on is not a small change.
-
-         [System64Folder] is C:\Windows\System32 for this x64 package, which is
-         where powershell.exe lives. Spelling it out as [WindowsFolder]System32
-         would be wrong for a 32-bit package - the file-system redirector sends
-         that to SysWOW64 - so it is named through the property that means what
-         it says.
-
-         IT RUNS Bootstrap.ps1, NOT Entry.ps1. A shortcut has no console to
-         report an import failure to, and Bootstrap.ps1 is Entry.ps1 with a
-         %TEMP% log file wrapped round it for exactly that case.
-
-         NO ELEVATION, deliberately. There is no elevation verb here and
-         none is wanted: a tool that demands administrator before it will even
-         list what it found teaches people to click through UAC. The menu asks
-         per choice, when a choice actually needs it.
-
-         WorkingDirectory is deliberately absent - "Start In" blank. Nothing in
-         the tool resolves a relative path, and a working directory is one more
-         thing that can be wrong. -->
-
 
     <!-- %ProgramData%\win11-optimizer - the action ledger's folder, and Q21's
          answer.
@@ -308,7 +422,6 @@
       </Component>
     </DirectoryRef>
 
-
     <!-- The Start Menu shortcut.
 
          TARGET IS WINDOWS POWERSHELL 5.1, ALWAYS. It is the floor this project
@@ -332,6 +445,11 @@
          it found teaches people to click through UAC. The menu asks per choice,
          when a choice actually needs it.
 
+         THE ICON IS THE PRODUCT'S, NOT POWERSHELL'S. Without it the .lnk shows
+         powershell.exe's own icon - honest about what the shortcut runs, wrong
+         about what the person installed. Same Icon table row as ARPPRODUCTICON,
+         so there is one .ico in the package and one in the repository.
+
          WorkingDirectory is deliberately absent - "Start In" blank. Nothing in
          the tool resolves a relative path, and a working directory is one more
          thing that can be wrong.
@@ -352,6 +470,8 @@
                   Description="Find and remove Windows 11 bloatware, with a record of everything it does."
                   Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
                   Arguments="-NoProfile -File &quot;[#F_App_Bootstrap_ps1]&quot;"
+                  Icon="win11optimizer.ico"
+                  IconIndex="0"
                   Show="normal" />
         <RegistryValue Root="HKCU"
                        Key="Software\win11-optimizer"

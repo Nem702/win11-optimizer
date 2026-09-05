@@ -89,3 +89,15 @@ been measured at ~18x the un-elevated time, for reasons not yet understood.
 
 Roadmap, decisions and per-chunk handoffs live under `docs/` -- present on disk,
 untracked by design. `docs/CHECKLIST.md` is the board.
+
+## Licence
+
+Apache License 2.0 -- see [`LICENSE.md`](LICENSE.md). SPDX: `Apache-2.0`.
+
+Copyright 2026 Nem702. The licence includes an express warranty disclaimer and a
+limitation of liability: this tool changes system state, and it is provided **as is**,
+with no warranty of any kind. Read [`USAGE.md`](USAGE.md) before running it, and note
+that only a confirmed selection is ever carried out.
+
+Contributions are accepted under the same licence (Apache-2.0 section 5). The licence
+grants no rights to any name or mark used by this project.

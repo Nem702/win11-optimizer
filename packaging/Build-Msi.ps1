@@ -4,8 +4,15 @@
 
 .DESCRIPTION
     Chunk P5-C2, part B. Two commands, in order: candle compiles the .wxs to a
-    .wixobj, light links the .wixobj to a .msi. Both come from the WiX Toolset
-    v3, and this script's first job is to find them.
+    .wixobj, light links the .wixobj to a .msi with -ext WixUIExtension for the
+    dialog set. Both tools come from the WiX Toolset v3, and this script's first
+    job is to find them.
+
+    One thing is built before candle runs: packaging\obj\License.rtf, converted
+    from LICENSE.md, which is what the installer's licence page displays. It is
+    generated on every build and is not committed, so the page and the file the
+    package installs are the same text by construction rather than by anyone
+    remembering to update two copies.
 
     IF WiX IS NOT INSTALLED THIS SCRIPT STOPS. It does not fall back to a .zip,
     a self-extracting .exe, an "installer" that is really a PowerShell script,
@@ -14,10 +21,12 @@
     says what to install and where to get it, and that is the whole of the
     error path.
 
-    WHAT IT DOES NOT DO: sign anything. Code signing is P5-C3 and is deferred
-    until there is a build worth signing (docs\CHECKLIST.md). An unsigned .msi
-    shows an unknown-publisher prompt on the UAC dialog; that is expected, and
-    pretending otherwise by suppressing the prompt would be worse.
+    WHAT IT DOES NOT DO: sign anything. Code signing is deferred until there is
+    a GUI binary worth signing, and it deliberately carries no chunk number --
+    docs\CHECKLIST.md keeps it unnumbered on purpose and packaging\README.md
+    states the same position. An unsigned .msi shows an unknown-publisher prompt
+    on the UAC dialog; that is expected, and pretending otherwise by suppressing
+    the prompt would be worse.
 
 .PARAMETER Version
     Three-part product version. Defaults to the engine module's ModuleVersion,
@@ -59,6 +68,7 @@ $script:PackagingRoot = $PSScriptRoot
 $script:RepositoryRoot = Split-Path -Path $PSScriptRoot -Parent
 $script:WxsPath = Join-Path -Path $script:PackagingRoot -ChildPath 'win11-optimizer.wxs'
 $script:ManifestPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'src\Win11Optimizer.Engine\Win11Optimizer.Engine.psd1'
+$script:LicensePath = Join-Path -Path $script:RepositoryRoot -ChildPath 'LICENSE.md'
 
 $script:WixMissingMessage = @'
 The WiX Toolset v3 is not installed on this machine, so the .msi cannot be built.
@@ -144,6 +154,69 @@ function Get-WixToolPath {
     ''
 }
 
+function ConvertTo-LicenseRtf {
+    <#
+    .SYNOPSIS
+        Writes LICENSE.md out as the .rtf WixUI_Minimal's licence page reads.
+
+    .DESCRIPTION
+        GENERATED, NEVER COMMITTED. A checked-in License.rtf is a second copy of
+        the licence text, and a second copy can drift from the first with
+        nothing to notice: the installer would show one licence and the
+        LICENSE.md installed beside it would say another. This runs on every
+        build, so the page and the file are the same text by construction.
+
+        The conversion is the whole of RTF that a plain-text licence needs.
+        Backslash, { and } are RTF's own three metacharacters and are escaped;
+        every line is emitted followed by \par, which is RTF for a line break,
+        and the lot is wrapped in a minimal header naming one monospaced font.
+        Apache-2.0's own layout is columnar, so a proportional font would ruin
+        the indentation it uses to separate its clauses.
+
+        \fs14 IS 7pt, AND IT WAS MEASURED ON THE DIALOG, not chosen. WelcomeEulaDlg's
+        ScrollableText control is a fixed width that this file may not change --
+        the dialog is WiX's and it ships unmodified -- so the only free variable
+        is the type size. At 8pt the licence's centred title block wrapped and
+        came out as three broken lines; at 7pt it renders as written and only
+        the longest body lines, the ones near 79 columns, still wrap. Smaller
+        would fit those too and stops being comfortably readable, which is the
+        wrong trade for a document somebody is being asked to accept.
+
+        ASCII ONLY, and asserted rather than assumed: a byte above 0x7E would
+        need a \'hh escape and the right code page behind it, and this project's
+        licence is plain ASCII. A non-ASCII byte stops the build instead of
+        silently rendering as the wrong character inside a legal document.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [string] $LicensePath,
+        [Parameter(Mandatory)] [string] $DestinationPath
+    )
+
+    $text = [System.IO.File]::ReadAllText($LicensePath)
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "LICENSE.md is empty ('$LicensePath'). The installer's licence page is generated from it, and a blank licence page is worse than none."
+    }
+
+    $offending = [regex]::Match($text, '[^\r\n\t\x20-\x7E]')
+    if ($offending.Success) {
+        throw ("LICENSE.md holds a non-ASCII character (U+{0:X4}) at offset {1}. The .rtf writer below is ASCII-only on purpose; escaping it correctly needs a code page decision that nobody has made." -f [int][char] $offending.Value[0], $offending.Index)
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    $null = $builder.AppendLine('{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fmodern\fcharset0 Courier New;}}')
+    $null = $builder.AppendLine('\viewkind4\uc1\pard\f0\fs14')
+    foreach ($line in ($text -split "`r`n|`n|`r")) {
+        $escaped = $line.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}')
+        $null = $builder.AppendLine($escaped + '\par')
+    }
+    $null = $builder.AppendLine('}')
+
+    [System.IO.File]::WriteAllText($DestinationPath, $builder.ToString(), (New-Object System.Text.ASCIIEncoding))
+    $DestinationPath
+}
+
 function Get-ModuleVersion {
     <#
     .SYNOPSIS
@@ -207,11 +280,20 @@ foreach ($folder in @($objPath, $OutputPath)) {
 
 $wixobj = Join-Path -Path $objPath -ChildPath 'win11-optimizer.wixobj'
 
+# The licence page's text, regenerated from LICENSE.md every time. An ABSOLUTE
+# path: WixUILicenseRtf is resolved by light against its own working directory,
+# not against the .wxs, and a relative one here is the trap that produces
+# "LGHT0103: The system cannot find the file" from a build that looks correct.
+$licenseRtf = ConvertTo-LicenseRtf -LicensePath $script:LicensePath `
+                                   -DestinationPath (Join-Path -Path $objPath -ChildPath 'License.rtf')
+Write-Host "Licence     : $licenseRtf (generated from $($script:LicensePath))"
+
 $candleArgument = @(
     '-nologo'
     '-arch', 'x64'
     "-dSourceRoot=$($script:RepositoryRoot)"
     "-dProductVersion=$Version"
+    "-dLicenseRtf=$licenseRtf"
     '-out', $wixobj
     $script:WxsPath
 )
@@ -224,9 +306,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---- light: .wixobj to .msi -----------------------------------------------
+#
+# -ext WixUIExtension is what supplies the dialog set. The .wxs asks for it by
+# reference only - <UIRef Id="WixUI_Common" /> and the standard dialogs behind
+# it - so candle needs nothing extra and only the link step does. Drop this and
+# light stops with LGHT0094, "Unresolved reference to symbol 'Dialog:ErrorDlg'"
+# and one more per dialog, producing nothing. That is the right failure: the
+# alternative would be a package that links clean and has no UI at all.
+#
+# WixUIExtension.dll ships beside light.exe in every WiX v3 layout, so the bare
+# name resolves from $wixBin without a path.
 
 $lightArgument = @(
     '-nologo'
+    '-ext', 'WixUIExtension'
     '-out', $msiPath
     $wixobj
 )
