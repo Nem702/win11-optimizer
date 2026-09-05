@@ -1093,7 +1093,14 @@ function Find-UnusedApp {
             $evidence.Add("Installed at $location.")
         }
         if ($null -ne $sizeKb -and [long]$sizeKb -gt 0) {
-            $evidence.Add("The uninstall key reports about $([math]::Round([long]$sizeKb / 1024.0, 1)) MB on disk.")
+            # BINARY UNITS, LABELLED AS BINARY UNITS -- the same correction P5-C3 made
+            # to Format-JunkSize, applied here to the engine's only other size
+            # formatter. EstimatedSize counts 1024-byte units and the divisor below is
+            # 1024, so the figure is MiB. 'MB' agreed with Explorer, which divides the
+            # same way and also writes MB, and disagreed with a drive maker's MB, a
+            # download size and Storage Settings. The two formatters now agree with
+            # each other, which is the part a reader can actually check.
+            $evidence.Add("The uninstall key reports about $([math]::Round([long]$sizeKb / 1024.0, 1)) MiB on disk.")
         }
 
         $evidence.Add('This is a heuristic finding. Windows records launches only patchily, so "no launch recorded" is weaker than "never launched" -- check whether you still want this before removing it.')

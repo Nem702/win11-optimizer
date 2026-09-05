@@ -801,8 +801,24 @@ Describe 'Evidence content' {
         $script:EvidenceText | Should -Match 'C:\\Program Files\\Evidence'
     }
 
-    It 'reports the disk size the uninstall key claims' {
-        $script:EvidenceText | Should -Match '200 MB'
+    It 'reports the disk size the uninstall key claims, in the units it is actually counting' {
+        # 204,800 KiB / 1024 = 200, and the divisor is 1024, so the figure is MiB.
+        # The old assertion was '200 MB'. It could not simply be loosened to
+        # '200 Mi?B' -- that would go on accepting the spelling this change exists
+        # to remove. Both spellings are pinned instead, one required and one
+        # forbidden, so neither the number nor the label can drift back.
+        $script:EvidenceText | Should -Match '200 MiB on disk'
+        $script:EvidenceText | Should -Not -Match '200 MB'
+    }
+
+    It 'calls a 1024-byte unit what Format-JunkSize calls it' {
+        # THE PAIR. These are the engine's only two size formatters, and the point
+        # of fixing the second was that they stop disagreeing. Same quantity --
+        # 204,800 KiB is 209,715,200 bytes -- put through the other one. If either
+        # drifts this fails; a test on one formatter alone would not notice.
+        InModuleScope Win11Optimizer.Engine {
+            Format-JunkSize -Bytes (204800 * 1024) | Should -Be '200.0 MiB'
+        }
     }
 
     It 'says out loud that this is a heuristic and not proof' {

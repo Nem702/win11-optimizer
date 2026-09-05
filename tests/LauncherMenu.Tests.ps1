@@ -862,6 +862,36 @@ Write-Host 'SURVIVED'
         $result.Text | Should -Match 'Choose Receipt to see what, if anything, was recorded'
     }
 
+    It 'does not send the person back to Receipt when Receipt is what failed' {
+        # The machine this happens on is the one whose ledger folder has the wrong
+        # ACL: Receipt is the choice that reads the ledger, so Receipt is the choice
+        # that throws, and "choose Receipt" there is advice to repeat the failure.
+        # ASSERTED BOTH WAYS -- the new sentence present and the generic one absent.
+        # Only the second half fails if the conditional is ever dropped, and only
+        # the first half fails if the two branches are swapped.
+        $result = InModuleScope Win11Optimizer.Engine {
+            $sink = New-Object System.Collections.Generic.List[string]
+            Mock Test-IsElevated { $false }
+            Mock Get-OptimizerRunReceipt { throw (New-Object System.UnauthorizedAccessException 'fabricated ledger ACL failure') }
+
+            $session = Invoke-OptimizerMenu -Reader (& {
+                    $queue = New-Object System.Collections.Generic.Queue[object]
+                    $queue.Enqueue('2'); $queue.Enqueue('5')
+                    { param($Prompt) if ($queue.Count -gt 0) { $queue.Dequeue() } else { $null } }.GetNewClosure()
+                }) -Writer { param($Line) $null = $sink.Add([string] $Line) }
+
+            [pscustomobject]@{ Session = $session; Text = ($sink -join "`n") }
+        }
+
+        $result.Session.Iteration[0].ChoiceName | Should -Be 'Receipt'
+        $result.Session.Iteration[0].Outcome    | Should -Be 'Failed'
+        $result.Session.Iteration[0].Detail     | Should -Match 'fabricated ledger ACL failure'
+        $result.Text | Should -Match 'stopped with an error and the menu is still here'
+        $result.Text | Should -Match 'UnauthorizedAccessException'
+        $result.Text | Should -Match 'Receipt is what failed'
+        $result.Text | Should -Not -Match 'Choose Receipt to see what, if anything, was recorded'
+    }
+
     It 'catches a cancellation raised while collecting what a choice needs' {
         $result = InModuleScope Win11Optimizer.Engine {
             $sink = New-Object System.Collections.Generic.List[string]

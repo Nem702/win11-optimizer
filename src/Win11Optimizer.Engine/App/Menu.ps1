@@ -813,7 +813,18 @@ function Invoke-OptimizerMenu {
             & $write ''
             & $write "  '$($choice.Name)' stopped with an error and the menu is still here."
             & $write "  $($inner.GetType().Name): $($inner.Message)"
-            & $write '  Choose Receipt to see what, if anything, was recorded.'
+            # RIGHT FOR EVERY CHOICE BUT ONE. When Receipt is itself what failed --
+            # the ledger folder with the wrong ACL is how that happens -- sending the
+            # person back to Receipt sends them into the thing that just broke in
+            # front of them, and the one person who ever reads this line is the one
+            # with the damaged install. One conditional, still one line of output,
+            # and deliberately NOT a per-choice message table.
+            if ($choice.Name -eq $script:MenuChoiceReceipt) {
+                & $write '  Receipt is what failed, so it has nothing further to tell you; the error above is all there is.'
+            }
+            else {
+                & $write '  Choose Receipt to see what, if anything, was recorded.'
+            }
             $null = $iteration.Add((New-OptimizerMenuIteration -Number $number -Answer $answer `
                 -ChoiceName $choice.Name -Argument $choiceArgument -Outcome $script:MenuOutcomeFailed `
                 -Detail "$($inner.GetType().Name): $($inner.Message)"))
