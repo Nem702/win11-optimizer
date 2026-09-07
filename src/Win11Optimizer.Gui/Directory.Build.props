@@ -1,0 +1,49 @@
+<Project>
+
+  <!--
+    Shared build settings for the three GUI projects. P6-C2.
+
+    net48 and x64 are not preferences. .NET Framework 4.8 is on every Windows 11
+    machine already, which is the whole reason the shell is allowed to exist in a
+    tool whose pitch is removing bloat: there is no runtime to bundle. x64 is
+    forced because WebView2Loader.dll is architecture-specific and the .msi is
+    x64.
+
+    LangVersion is pinned rather than left to float. 7.3 is the last version that
+    net48 supports without a compiler-provided shim type, so pinning it means the
+    code cannot silently start depending on one.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>4</WarningLevel>
+    <NeutralLanguage>en</NeutralLanguage>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Company>Nem702</Company>
+    <Product>win11-optimizer</Product>
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+
+    <!--
+      THE COMPILER EMBEDS THE FULL PATH OF EVERY SOURCE FILE, and without this
+      the built binaries carry whatever folder they happened to be built in.
+      Measured, not assumed: before this line, every output contained the
+      absolute repository path. "No secret, path or machine name is baked into
+      the shell" is an acceptance criterion for this chunk, and a build machine's
+      folder layout is exactly the sort of thing that leaks by accident.
+
+      This rewrites that prefix to a repository-relative one, so a stack trace
+      still names the file it came from.
+    -->
+    <PathMap>$(MSBuildThisFileDirectory)=src\Win11Optimizer.Gui\</PathMap>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+
+</Project>

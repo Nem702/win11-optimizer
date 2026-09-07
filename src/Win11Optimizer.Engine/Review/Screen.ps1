@@ -51,6 +51,7 @@ $script:ReviewScreenTypeName    = 'Win11Optimizer.ReviewScreen'
 $script:ReviewSectionTypeName   = 'Win11Optimizer.ReviewSection'
 $script:ReviewRowTypeName       = 'Win11Optimizer.ReviewRow'
 $script:ReviewSelectionTypeName = 'Win11Optimizer.ReviewSelection'
+$script:ReviewScanTypeName      = 'Win11Optimizer.ReviewScan'
 
 # The four sections, IN SCREEN ORDER. Each one opens differently because each
 # category's honest first sentence is a different sentence -- the order and the
@@ -690,6 +691,57 @@ function Get-ReviewScanFacts {
     }
 }
 
+function New-ReviewScanRecord {
+    <#
+        One detector's scan, reduced to what a consumer of the screen needs and
+        carrying its ScanSources whole.
+
+        ADDED BY P6-C1, AND NOTHING PRINTS IT. Format-ReviewSection and
+        Format-ReviewScreen do not read this, so the console screen is byte for
+        byte what P4-C1 shipped. It exists because the JSON contract has to
+        carry every source with its status and its Reason, and the screen was
+        the only thing in the project holding all four scans at once -- so
+        re-deriving which scan feeds which section somewhere else would have put
+        that knowledge in two places.
+
+        THE SOURCES ARE THE POINT. IsComplete and IncompleteReason are already
+        on the sections, and RefusedSourceName with them, but a summary sentence
+        is not the record: a consumer that has to tell 'Skipped' from 'Refused'
+        -- environmental gap against a signal this project declines to use on
+        every machine, forever -- needs the per-source status, and it needs the
+        Reason beside it.
+
+        StartedUtc stays a [datetime] here, because that is what
+        New-ScanResult holds and this is the engine's own object. Q29 is a
+        SERIALIZATION problem and it is solved where serialization happens.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Scan
+    )
+
+    if ($null -eq $Scan) { return $null }
+
+    $facts = Get-ReviewScanFacts -Scan $Scan
+
+    [pscustomobject][ordered]@{
+        PSTypeName        = $script:ReviewScanTypeName
+        Detector          = [string](Get-OptimizerProperty -InputObject $Scan -Name 'Detector' -Default '')
+        Category          = [string](Get-OptimizerProperty -InputObject $Scan -Name 'Category' -Default '')
+        StartedUtc        = Get-OptimizerProperty -InputObject $Scan -Name 'StartedUtc'
+        DurationSeconds   = [double](Get-OptimizerProperty -InputObject $Scan -Name 'DurationSeconds' -Default 0)
+        IsElevated        = [bool](Get-OptimizerProperty -InputObject $Scan -Name 'IsElevated' -Default $false)
+        InventoryCount    = [int](Get-OptimizerProperty -InputObject $Scan -Name 'InventoryCount' -Default 0)
+        FindingCount      = [int]@(Get-OptimizerProperty -InputObject $Scan -Name 'Findings' -Default @()).Count
+        IsComplete        = $facts.IsComplete
+        IncompleteReason  = $(if ([string]::IsNullOrWhiteSpace($facts.IncompleteReason)) { $null } else { $facts.IncompleteReason })
+        RefusedSourceName = $facts.RefusedSourceName
+        Source            = [psobject[]] @(@(Get-OptimizerProperty -InputObject $Scan -Name 'Sources' -Default @()) |
+            Where-Object { $null -ne $_ })
+    }
+}
+
 function Get-ReviewFinding {
     # The findings of one category out of a scan result, in the order the
     # detector produced them.
@@ -1230,6 +1282,12 @@ function Get-ReviewScreen {
         what this tool has already done, in the words it was already given. It is
         $null when there is no ledger yet.
 
+        Scan is the four detectors' scans as records, in the order they were
+        run, each carrying its ScanSources whole -- status and Reason both.
+        Nothing prints it; it was added by P6-C1 so the JSON contract could
+        carry the per-source detail without a second consumer re-deriving which
+        scan feeds which section. See New-ReviewScanRecord.
+
     .PARAMETER StartupScan
         The result of Invoke-StartupItemScan. Feeds both the startup and the
         service section.
@@ -1292,12 +1350,26 @@ function Get-ReviewScreen {
         }
     }
 
+    # THE FOUR SCANS, AS RECORDS, IN THE ORDER THEY WERE RUN. Added by P6-C1
+    # and printed by nothing: the console screen is unchanged. It is here rather
+    # than in the JSON contract because this function is the only place in the
+    # project that holds all four scans at once, and the mapping from scan to
+    # section is its knowledge -- a second consumer re-deriving it would be the
+    # same fact in two places.
+    $scans = [psobject[]] @(@(
+        (New-ReviewScanRecord -Scan $StartupScan)
+        (New-ReviewScanRecord -Scan $UnusedAppScan)
+        (New-ReviewScanRecord -Scan $OemScan)
+        (New-ReviewScanRecord -Scan $JunkScan)
+    ) | Where-Object { $null -ne $_ })
+
     [pscustomobject][ordered]@{
         PSTypeName    = $script:ReviewScreenTypeName
         GeneratedUtc  = [datetime]::UtcNow.ToString('o')
         MachineName   = [Environment]::MachineName
         UserName      = [Environment]::UserName
         IsElevated    = [bool](Test-IsElevated)
+        Scan          = $scans
         Section       = $sections
         IsComplete    = ($incomplete.Count -eq 0)
         # Named, not summarised. A banner that said "some scans were partial"

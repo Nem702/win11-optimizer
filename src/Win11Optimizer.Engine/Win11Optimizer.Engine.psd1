@@ -105,6 +105,13 @@
         # App/Entry.ps1, which is the launcher and is not part of this surface.
         'Invoke-OptimizerMenu'
         'Invoke-OptimizerElevated'
+
+        # P6-C1 - the JSON contract (Review/Json.ps1). A scan as JSON Lines on
+        # stdout, for a consumer in another process. Read-only and one-way.
+        'Get-OptimizerScanContract'
+        'ConvertTo-OptimizerScanPayload'
+        'ConvertTo-OptimizerScanJson'
+        'Invoke-OptimizerScanJson'
     )
     CmdletsToExport       = @()
     VariablesToExport     = @()

@@ -1,3 +1,6 @@
 docs
 packaging/obj/
 packaging/dist/
+bin/
+obj/
+TestResults/

@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE SHELL. A window, one control filling it, and a page inside that.
+
+    WinForms rather than WPF: the window is one control filling the frame, and
+    WPF buys nothing for that. WebView2 rather than the in-box WebBrowser
+    control, which is still MSHTML.
+
+    The WebView2 RUNTIME is not bundled and never will be - it ships with Edge
+    on Windows 11. What this package provides is the managed wrapper and the
+    native loader, three files beside the executable. Program.cs checks for the
+    runtime before it builds a window, and says a sentence if it is missing.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>Win11Optimizer.Gui</AssemblyName>
+    <RootNamespace>Win11Optimizer.Gui</RootNamespace>
+    <AssemblyTitle>win11-optimizer</AssemblyTitle>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Win11Optimizer.Gui.Core\Win11Optimizer.Gui.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    The page is compiled into the executable rather than shipped beside it. It
+    is loaded with NavigateToString, so there is no local file for the browser
+    to reach and no folder for anything to drop a different index.html into.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Web\index.html" />
+    <EmbeddedResource Include="Web\app.css" />
+    <EmbeddedResource Include="Web\app.js" />
+  </ItemGroup>
+
+</Project>

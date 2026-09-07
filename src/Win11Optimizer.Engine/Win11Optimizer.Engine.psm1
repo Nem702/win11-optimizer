@@ -656,8 +656,10 @@ function Get-OptimizerLogPath {
 #   Removal\    the removal dispatcher (chunk P3-C1). AFTER Detectors\, because
 #               it reads their module-scope constants -- the Run-key view table
 #               and the StartupApproved store paths -- rather than restating them.
-#   Review\     the console review screen (chunk P4-C1) and the execution bridge
-#               (chunk P4-C2). It is the consumer of all three above it: it
+#   Review\     the console review screen (chunk P4-C1), the execution bridge
+#               (chunk P4-C2) and the JSON contract (chunk P6-C1) -- the second
+#               renderer of the same screen, for a consumer in another process.
+#               It is the consumer of all three above it: it
 #               renders what the detectors found, prints the dispatcher's own
 #               preview text, reads the ledger's receipt and -- from Execute.ps1
 #               and nowhere else in that folder -- hands a confirmed set of plans
@@ -781,12 +783,14 @@ foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSSc
     . $optimizerSourceFile
 }
 
-# Entry.ps1 and Bootstrap.ps1 are EXCLUDED -- see the block comment above. They
-# are the two launchers, not source files, and dot-sourcing either one here would
-# re-enter Import-Module and open the menu from inside the module's own import.
+# Entry.ps1, Bootstrap.ps1 and Scan.ps1 are EXCLUDED -- see the block comment
+# above. They are the three launchers, not source files, and dot-sourcing any of
+# them here would re-enter Import-Module from inside the module's own import.
 # Bootstrap.ps1 joined the list in P5-C2: it is what the installed Start Menu
-# shortcut runs, and it is Entry.ps1 with a log file wrapped round it.
-foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'App') -Name 'App' -Exclude 'Entry.ps1', 'Bootstrap.ps1')) {
+# shortcut runs, and it is Entry.ps1 with a log file wrapped round it. Scan.ps1
+# joined it in P6-C1: it is what a second process runs to get one scan as JSON
+# Lines on stdout, and it is the only one of the three that no person invokes.
+foreach ($optimizerSourceFile in (Get-OptimizerSourceFile -Path (Join-Path $PSScriptRoot 'App') -Name 'App' -Exclude 'Entry.ps1', 'Bootstrap.ps1', 'Scan.ps1')) {
     . $optimizerSourceFile
 }
 
@@ -884,8 +888,22 @@ Export-ModuleMember -Function @(
     # (Support/Elevation.ps1). The menu is a switchboard: every choice on it is
     # a call to one of the exports above, and it adds no mechanism of its own.
     # Invoke-OptimizerElevated starts a second, elevated process running
-    # App/Entry.ps1 -- which is the entry point, is NOT exported, and is the one
-    # .ps1 under this folder the loader deliberately does not dot-source.
+    # App/Entry.ps1 -- which is a launcher, is NOT exported, and is one of the
+    # three .ps1 files under this folder the loader deliberately does not
+    # dot-source.
     'Invoke-OptimizerMenu'
     'Invoke-OptimizerElevated'
+
+    # P6-C1 - the JSON contract (Review/Json.ps1). The second renderer of
+    # Get-ReviewScreen, for a consumer in another process: JSON Lines on stdout,
+    # one complete object per line, and nothing else on stdout ever.
+    # Get-OptimizerScanContract publishes the vocabulary,
+    # ConvertTo-OptimizerScanPayload projects the screen into plain data,
+    # ConvertTo-OptimizerScanJson turns one record into one line, and
+    # Invoke-OptimizerScanJson runs the scans and writes them. Read-only and
+    # one-way: nothing here takes a selection back into the engine.
+    'Get-OptimizerScanContract'
+    'ConvertTo-OptimizerScanPayload'
+    'ConvertTo-OptimizerScanJson'
+    'Invoke-OptimizerScanJson'
 )

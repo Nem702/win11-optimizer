@@ -1,0 +1,603 @@
+<title>Decisions First</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#0d1218; --surface:#141b23; --raise:#1b242f; --raise2:#212c39;
+  --edge:#28333f; --edge-soft:#1f2833;
+  --ink:#e4eaf1; --soft:#93a1b1; --faint:#65727f;
+  --accent:#4fb3a1; --accent-ink:#07211d; --accent-dim:#1a3833;
+  --attention:#dda03a; --attention-dim:#3a2e14;
+  --safe:#68b370; --safe-dim:#1b3220;
+  --refuse:#d96c5c; --refuse-dim:#3a201c;
+  --sans:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",Consolas,ui-monospace,monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+@media (prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important;}}
+
+.frame{max-width:1240px;margin:1.6rem auto;padding:0 1rem;}
+.premise{
+  font-family:var(--mono);font-size:.73rem;letter-spacing:.02em;color:var(--faint);
+  margin:0 0 .7rem;display:flex;flex-wrap:wrap;gap:.5rem 1.1rem;
+}
+.premise b{color:var(--accent);font-weight:600;}
+
+.app{
+  background:var(--surface);border:1px solid var(--edge);border-radius:8px;overflow:hidden;
+  box-shadow:0 18px 46px rgba(0,0,0,.42);display:flex;flex-direction:column;min-height:660px;
+}
+
+/* title bar */
+.tbar{display:flex;align-items:center;gap:.7rem;padding:.62rem .9rem;background:var(--raise);border-bottom:1px solid var(--edge);flex-wrap:wrap;}
+.tbar .name{font-weight:600;letter-spacing:-.01em;font-size:.92rem;}
+.tbar .meta{font-family:var(--mono);font-size:.72rem;color:var(--faint);}
+.tbar .sp{margin-left:auto;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;}
+.tag{font-family:var(--mono);font-size:.68rem;padding:.18rem .5rem;border-radius:3px;border:1px solid var(--edge);color:var(--soft);white-space:nowrap;}
+.tag.good{color:var(--safe);border-color:var(--safe-dim);background:rgba(104,179,112,.09);}
+.tag.warn{color:var(--attention);border-color:var(--attention-dim);background:rgba(221,160,58,.09);}
+
+/* body */
+.shell{display:grid;grid-template-columns:224px minmax(0,1fr);flex:1;min-height:0;}
+.rail{background:var(--ground);border-right:1px solid var(--edge);padding:.85rem .6rem;display:flex;flex-direction:column;gap:.1rem;}
+.rail .grp{font-family:var(--mono);font-size:.64rem;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);padding:.7rem .55rem .35rem;font-weight:600;}
+.rail button{display:flex;align-items:center;gap:.5rem;width:100%;padding:.46rem .55rem;border-radius:4px;font-size:.87rem;color:var(--soft);text-align:left;transition:background .12s,color .12s;}
+.rail button:hover{background:var(--raise);color:var(--ink);}
+.rail button.on{background:var(--raise2);color:var(--ink);box-shadow:inset 2px 0 0 var(--accent);}
+.rail .ct{margin-left:auto;font-family:var(--mono);font-size:.72rem;font-variant-numeric:tabular-nums;color:var(--faint);}
+.rail button.on .ct{color:var(--soft);}
+.rail .badge{background:var(--attention);color:#241a05;border-radius:8px;padding:0 .34rem;font-weight:700;font-size:.68rem;font-family:var(--mono);}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;}
+.main.withinsp{grid-template-columns:minmax(0,1fr) 330px;}
+.col{padding:1.15rem 1.25rem 1.4rem;min-width:0;overflow:auto;max-height:74vh;}
+.insp{border-left:1px solid var(--edge);background:var(--ground);}
+
+h2.view{font-size:1.12rem;margin:0 0 .2rem;font-weight:600;letter-spacing:-.015em;}
+p.sub{margin:0 0 1.15rem;color:var(--soft);font-size:.87rem;max-width:74ch;}
+.hd{font-family:var(--mono);font-size:.65rem;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:600;margin:0 0 .6rem;}
+
+/* decision cards */
+.queue{display:flex;flex-direction:column;gap:.55rem;margin-bottom:1.7rem;}
+.card{background:var(--raise);border:1px solid var(--edge);border-radius:6px;padding:.8rem .9rem;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.15rem .8rem;align-items:start;transition:border-color .12s;}
+.card:hover{border-color:#38475a;}
+.card.pickd{border-color:var(--accent);background:var(--accent-dim);}
+.card .stripe{width:3px;align-self:stretch;border-radius:2px;background:var(--attention);}
+.card.s-safe .stripe{background:var(--safe);}
+.card h3{margin:0 0 .22rem;font-size:.94rem;font-weight:600;letter-spacing:-.01em;display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;}
+.card p{margin:0;font-size:.81rem;color:var(--soft);line-height:1.52;}
+.card p b{color:var(--ink);font-weight:600;}
+.card .acts{display:flex;flex-direction:column;gap:.32rem;align-items:stretch;}
+
+.btn{font-family:var(--mono);font-size:.7rem;font-weight:600;padding:.3rem .7rem;border-radius:4px;border:1px solid var(--edge);color:var(--soft);white-space:nowrap;text-align:center;transition:.12s;}
+.btn:hover{border-color:var(--soft);color:var(--ink);}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.btn.pri:hover{filter:brightness(1.1);color:var(--accent-ink);}
+.btn.on{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);}
+.btn.big{font-size:.78rem;padding:.45rem 1.1rem;}
+.btn[disabled]{opacity:.42;cursor:not-allowed;}
+
+.pill{display:inline-block;font-family:var(--mono);font-size:.65rem;font-weight:600;padding:.1rem .44rem;border-radius:9px;letter-spacing:.02em;white-space:nowrap;}
+.p-safe{background:rgba(104,179,112,.15);color:var(--safe);}
+.p-rev{background:rgba(221,160,58,.15);color:var(--attention);}
+.p-info{background:rgba(147,161,177,.13);color:var(--soft);}
+.p-stop{background:rgba(217,108,92,.15);color:var(--refuse);}
+.p-acc{background:var(--accent-dim);color:var(--accent);}
+
+/* inventory strip */
+.inv{border:1px solid var(--edge);border-radius:6px;overflow:hidden;}
+.inv .row{display:grid;grid-template-columns:minmax(0,1.5fr) auto minmax(0,1.7fr) auto;gap:1rem;align-items:center;padding:.7rem .9rem;border-bottom:1px solid var(--edge-soft);font-size:.85rem;}
+.inv .row:last-child{border-bottom:none;}
+.inv .row:hover{background:var(--raise);}
+.inv .lead{font-weight:500;}
+.inv .n{font-family:var(--mono);font-size:.78rem;color:var(--soft);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.inv .why{font-size:.8rem;color:var(--faint);}
+.inv .why b{color:var(--attention);font-weight:600;}
+
+.note{font-size:.79rem;color:var(--soft);border-left:2px solid var(--edge);padding:.3rem 0 .3rem .75rem;margin:.9rem 0 0;line-height:1.55;}
+.note b{color:var(--ink);font-weight:600;}
+.note.warn{border-left-color:var(--attention);}
+.note.stop{border-left-color:var(--refuse);}
+
+/* tables */
+.chips{display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.9rem;}
+.chip{font-family:var(--mono);font-size:.7rem;padding:.24rem .6rem;border-radius:3px;border:1px solid var(--edge);color:var(--soft);transition:.12s;}
+.chip:hover{border-color:var(--soft);color:var(--ink);}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600;}
+.tw{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:.83rem;}
+th{text-align:left;font-family:var(--mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600;padding:.3rem .7rem .45rem 0;border-bottom:1px solid var(--edge);white-space:nowrap;}
+td{padding:.44rem .7rem .44rem 0;border-bottom:1px solid var(--edge-soft);vertical-align:top;}
+tr.pick{cursor:pointer;}
+tr.pick:hover td{background:var(--raise);}
+tr.sel td{background:var(--accent-dim);}
+tr.sel td:first-child{box-shadow:inset 2px 0 0 var(--accent);}
+.num{font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.mono{font-family:var(--mono);}
+.dim{color:var(--soft);}
+.faint{color:var(--faint);}
+.qual{font-family:var(--mono);font-size:.72rem;color:var(--faint);}
+.stripe-c{display:inline-block;width:3px;height:1.05em;border-radius:2px;vertical-align:-.18em;}
+.st-a{background:var(--attention);} .st-s{background:var(--safe);} .st-n{background:var(--edge);} .st-r{background:var(--refuse);}
+
+/* inspector */
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.34rem .8rem;margin:0 0 1rem;}
+.kv dt{font-family:var(--mono);font-size:.63rem;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);padding-top:.18rem;}
+.kv dd{margin:0;font-family:var(--mono);font-size:.75rem;word-break:break-all;}
+.empty{color:var(--faint);font-size:.85rem;padding:2rem .4rem;text-align:center;line-height:1.6;}
+
+.bd{margin:.7rem 0 0;border-top:1px solid var(--edge-soft);}
+.bd .r{display:flex;gap:.6rem;align-items:baseline;padding:.34rem 0;border-bottom:1px solid var(--edge-soft);font-size:.78rem;}
+.bd .r .nm{flex:1;min-width:0;}
+.bd .r .v{font-family:var(--mono);color:var(--soft);font-variant-numeric:tabular-nums;}
+
+/* action bar */
+.abar{display:flex;align-items:center;gap:.9rem;padding:.7rem 1.1rem;background:var(--raise);border-top:1px solid var(--edge);flex-wrap:wrap;}
+.abar .cnt{font-size:.85rem;color:var(--soft);}
+.abar .cnt b{color:var(--ink);font-weight:600;}
+.abar .sp{margin-left:auto;display:flex;gap:.5rem;}
+
+/* scan */
+.scan{padding:3rem 1.4rem;max-width:620px;}
+.scan .ph{display:flex;align-items:baseline;gap:.7rem;padding:.5rem 0;font-size:.88rem;color:var(--faint);border-bottom:1px solid var(--edge-soft);}
+.scan .ph.done{color:var(--ink);}
+.scan .ph.now{color:var(--accent);}
+.scan .ph .t{margin-left:auto;font-family:var(--mono);font-size:.74rem;}
+.bar{height:5px;border-radius:3px;background:var(--edge);overflow:hidden;margin:1.2rem 0 .5rem;}
+.bar span{display:block;height:100%;background:var(--accent);transition:width .3s ease;}
+.scan .cur{font-family:var(--mono);font-size:.76rem;color:var(--soft);}
+
+.plan{background:var(--ground);border:1px solid var(--edge);border-radius:6px;padding:.9rem 1rem;font-family:var(--mono);font-size:.78rem;line-height:1.65;white-space:pre-wrap;color:var(--soft);margin-bottom:1rem;}
+.plan .h{color:var(--ink);font-weight:600;}
+.plan .g{color:var(--safe);} .plan .r{color:var(--refuse);} .plan .a{color:var(--attention);}
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr;} .rail{flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--edge);}
+  .rail .grp{display:none;} .rail button{width:auto;white-space:nowrap;}
+  .main.withinsp{grid-template-columns:1fr;} .insp{border-left:none;border-top:1px solid var(--edge);}
+}
+</style>
+
+<div class="frame">
+  <p class="premise">
+    <span><b>Prototype</b> &mdash; win11-optimizer review screen</span>
+    <span>Decisions first, inventory never hidden</span>
+    <span>Real data: elevated scan, 5 Sep 2026</span>
+  </p>
+
+  <div class="app">
+    <div class="tbar">
+      <span class="name">win11-optimizer</span>
+      <span class="meta" id="scanmeta">scanned 14:24 &middot; NEM\neman</span>
+      <span class="sp">
+        <span class="tag warn">Administrator</span>
+        <span class="tag good" id="completetag">Complete &mdash; nothing skipped</span>
+      </span>
+    </div>
+
+    <div class="shell">
+      <nav class="rail" id="rail"></nav>
+      <div class="main" id="main"></div>
+    </div>
+
+    <div class="abar" id="abar"></div>
+  </div>
+</div>
+
+<script>
+const DATA = {
+  scanned:"2026-09-05T14:24:10", user:"NEM\\neman", elevated:true, complete:true,
+  decisions:[
+    { id:"junk-nvidia", cat:"junk", sev:"a", title:"NVIDIA shader cache",
+      lead:"<b>30.78 GB</b> across 818 files, every one older than 30 days &mdash; this row's own window, not the scan's 7. It is <b>94.2%</b> of everything in the junk category.",
+      safety:"Review needed", route:"FileDeleteSet", reversible:false,
+      kv:{ "Location id":"nvidia-shader-cache", "Path":"%LOCALAPPDATA%\\NVIDIA\\DXCache", "On disk":"30.78 GB / 818 files", "Age window":"30 days (row) vs 7 (scan)", "Route":"FileDeleteSet", "Reversible":"No" },
+      note:"Shader caches rebuild themselves the next time a game runs. This is the one irreversible route, so every file is re-checked for being open before anything is deleted." },
+    { id:"svc-razer", cat:"services", sev:"a", title:"Razer Chroma SDK Server",
+      lead:"Service set to start automatically, and <b>the file it points at is missing</b>. Setting it to Disabled is fully reversible and written to the ledger.",
+      safety:"Review needed", route:"ServiceStartupType", reversible:true,
+      kv:{ "Service":"RzChromaSDKService", "Registry":"HKLM\\SYSTEM\\CurrentControlSet\\Services\\...", "Start value":"2 (Automatic)", "Would become":"4 (Disabled)", "Publisher":"— (binary gone)", "Route":"ServiceStartupType", "Reversible":"Yes" },
+      note:"This is the <b>only route this build carries out</b>. It changes a startup type; it never deletes a service and never stops one that is running." },
+    { id:"app-copilot", cat:"apps", sev:"s", title:"Microsoft Copilot &mdash; 2 registrations",
+      lead:"One Appx package and one <span class='mono'>HKLM</span> uninstall key, same display name. <b>Removing one leaves the other able to restore it</b>, so they are offered together.",
+      safety:"Safe to remove", route:"AppxRemove + RegistryUninstall", reversible:false,
+      kv:{ "Registration 1":"Microsoft.Copilot_8wekyb3d8bbwe (Appx, per-user)", "Registration 2":"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Copilot", "Matched":"list entry 'microsoft-copilot'", "Confidence":"Known", "Consent required":"No", "Route":"AppxRemove + RegistryUninstall" },
+      note:"Display name is not an identity. A third registration &mdash; a provisioned Appx package &mdash; exists on some machines and would need administrator rights to see." },
+    { id:"app-preinstall", cat:"apps", sev:"s", title:"Dev Home, Microsoft 365 hub, XLSX Spreadsheet",
+      lead:"Three preinstalled apps matched on the curated list. Grouped because it is the same decision three times &mdash; expand to take them separately.",
+      safety:"Safe to remove", route:"AppxRemove", reversible:false,
+      kv:{ "Dev Home":"Microsoft.Windows.DevHome", "Microsoft 365 hub":"Microsoft.MicrosoftOfficeHub", "XLSX Spreadsheet":"50236FileViewerPro.XLSXSpreadsheet", "Matched":"curated list", "Confidence":"Known", "Route":"AppxRemove" },
+      note:"Nothing here is judged by publisher or by how it behaves. A curated list match is the only thing this tool ever calls safe to remove." }
+  ],
+  inventory:[
+    { cat:"startup", lead:"164 things start with this PC", n:"0 flagged",
+      why:"15 Run keys &middot; 57 scheduled tasks &middot; 92 services &middot; <b>31 already off</b>" },
+    { cat:"apps", lead:"293 installed applications", n:"5 flagged",
+      why:"51 used recently &middot; 0 look unused &middot; <b>242 could not be judged</b>" },
+    { cat:"junk", lead:"15 junk locations measured", n:"7 hold something",
+      why:"32.66 GB &middot; 25,931 files &middot; <b>largest row is 94.2%</b>" },
+    { cat:"services", lead:"92 automatic services", n:"1 flagged",
+      why:"<b>10 held back as protected</b> whatever else is true about them" }
+  ],
+  startup:[
+    {n:"Discord", q:"per-user", mech:"Run key", pub:"Discord Inc.", state:"Enabled", s:"info", lbl:"Not offered", why:"Autostarting is not evidence of being unwanted."},
+    {n:"Discord", q:"machine", mech:"Run key", pub:"Discord Inc.", state:"Off", s:"info", lbl:"Not offered", why:"Already disabled by you. Recorded, never re-enabled."},
+    {n:"Steam Client Bootstrapper", q:"", mech:"Run key", pub:"Valve Corp.", state:"Enabled", s:"info", lbl:"Not offered", why:"Not on any curated list, target present."},
+    {n:"NVIDIA Display Container LS", q:"", mech:"Service", pub:"Microsoft Windows Hardware Compatibility Publisher", state:"Automatic", s:"info", lbl:"Not offered", why:"Signer is the WHQL attestation publisher, not NVIDIA. Resolution only ever adds exclusions."},
+    {n:"Razer Chroma SDK Server", q:"", mech:"Service", pub:"—", state:"Automatic", s:"a", lbl:"Review needed", why:"Target file is missing: proved orphan."},
+    {n:"Riot Vanguard", q:"", mech:"Service", pub:"Riot Games, Inc.", state:"Automatic", s:"r", lbl:"Protected", why:"Anti-cheat. Security class is never offered, orphan or not."},
+    {n:"MSI_Case_Service", q:"", mech:"Service", pub:"Micro-Star Int'l Co., Ltd.", state:"Automatic", s:"r", lbl:"Protected", why:"Publisher rule 'Micro-Star*'. Hardware control software."},
+    {n:"OneDrive", q:"per-user", mech:"Run key", pub:"Microsoft Corporation", state:"Enabled", s:"info", lbl:"Not offered", why:"Cross-category product. Not grouped in v1."},
+    {n:"Malwarebytes", q:"", mech:"Service", pub:"Malwarebytes Inc.", state:"Automatic", s:"r", lbl:"Protected", why:"Security class."},
+    {n:"SecurityHealth", q:"", mech:"Run key", pub:"Microsoft Corporation", state:"Enabled", s:"r", lbl:"Protected", why:"Exact list entry, added so the security gate catches its own example."}
+  ],
+  apps:[
+    {n:"Dev Home", q:"Appx", id:"Microsoft.Windows.DevHome", found:"Curated list", s:"s", lbl:"Safe to remove", why:"list entry 'microsoft-dev-home'"},
+    {n:"Microsoft 365 (Office) hub", q:"Appx", id:"Microsoft.MicrosoftOfficeHub", found:"Curated list", s:"s", lbl:"Safe to remove", why:"list entry 'microsoft-365-hub'"},
+    {n:"Microsoft Copilot", q:"Appx", id:"Microsoft.Copilot_8wekyb3d8bbwe", found:"Curated list", s:"s", lbl:"Safe to remove", why:"list entry 'microsoft-copilot'"},
+    {n:"Microsoft Copilot", q:"HKLM", id:"HKLM\\...\\Uninstall\\Copilot", found:"Curated list", s:"s", lbl:"Safe to remove", why:"list entry 'microsoft-copilot'"},
+    {n:"XLSX Spreadsheet", q:"Appx", id:"50236FileViewerPro.XLSXSpreadsheet", found:"Curated list", s:"s", lbl:"Safe to remove", why:"list entry 'fileviewerpro-xlsx'"},
+    {n:"Steam", q:"", id:"Valve Corporation Steam", found:"UserAssist", s:"info", lbl:"Not offered", why:"used 2 days ago"},
+    {n:"Visual Studio Code", q:"", id:"Microsoft VS Code", found:"UserAssist", s:"info", lbl:"Not offered", why:"used 4 hours ago"},
+    {n:"Wallpaper Engine", q:"", id:"Steam App 431960", found:"UserAssist", s:"info", lbl:"Not offered", why:"used 6 hours ago"},
+    {n:"NZXT CAM", q:"", id:"NZXT CAM", found:"—", s:"info", lbl:"Cannot judge", why:"no usage signal reaches this app"},
+    {n:"MSI Center", q:"Appx", id:"MSI.MSICenter", found:"Exclusion list", s:"info", lbl:"Never considered", why:"class: hardware-control-software"},
+    {n:"Surfshark", q:"", id:"Surfshark", found:"Exclusion list", s:"r", lbl:"Protected", why:"class: security (vpn-clients)"},
+    {n:"Malwarebytes", q:"Appx", id:"Malwarebytes.AntiMalware", found:"Exclusion list", s:"r", lbl:"Protected", why:"class: security"}
+  ],
+  junk:[
+    {n:"NVIDIA shader cache", size:"30.78 GB", files:"818", win:"30 days", s:"a", lbl:"Review needed", pct:94.2,
+     bd:[["DXCache","30.71 GB"],["GLCache","72.4 MB"]]},
+    {n:"Google Chrome web cache", size:"1.30 GB", files:"17,841", win:"7 days", s:"a", lbl:"Review needed", pct:4.0,
+     bd:[["Profile 1","6,426 files &middot; 622.5 MiB"],["Profile 2","5,886 files &middot; 460.5 MiB"],["Default","5,525 files &middot; 251.5 MiB"],["System Profile","4 files &middot; 144 bytes"]]},
+    {n:"Brave web cache", size:"382.9 MB", files:"6,289", win:"7 days", s:"a", lbl:"Review needed", pct:1.1,
+     bd:[["Default","6,285 files &middot; 382.9 MiB"],["Profile 1","4 files &middot; 0 bytes"]]},
+    {n:"Per-user temporary files", size:"188.5 MB", files:"789", win:"7 days", s:"a", lbl:"Review needed", pct:0.6, bd:[]},
+    {n:"Explorer thumbnail and icon cache", size:"13.5 MB", files:"20", win:"7 days", s:"a", lbl:"Review needed", pct:0.04, bd:[]},
+    {n:"Windows Error Reporting queues", size:"7.3 MB", files:"167", win:"7 days", s:"a", lbl:"Review needed", pct:0.02, bd:[]},
+    {n:"System temporary files", size:"577.9 KB", files:"7", win:"7 days", s:"a", lbl:"Review needed", pct:0.002, bd:[]},
+    {n:"Windows servicing logs", size:"44.7 MB", files:"6", win:"—", s:"info", lbl:"Inventory only", why:"never offered for deletion", bd:[]}
+  ],
+  services:[
+    {n:"Razer Chroma SDK Server", state:"Automatic", s:"a", lbl:"Review needed", why:"Target file is missing"},
+    {n:"NVIDIA Display Container LS", state:"Automatic", s:"info", lbl:"Not offered", why:"Target present, not on any list"},
+    {n:"Riot Vanguard", state:"Automatic", s:"r", lbl:"Protected", why:"Security class — anti-cheat"},
+    {n:"MSI_Case_Service", state:"Automatic", s:"r", lbl:"Protected", why:"Publisher 'Micro-Star*'"},
+    {n:"LightKeeperService", state:"Automatic", s:"r", lbl:"Protected", why:"Publisher 'Micro-Star*'"},
+    {n:"MBAMService", state:"Automatic", s:"r", lbl:"Protected", why:"Security class"},
+    {n:"Docker Desktop Service", state:"Automatic", s:"info", lbl:"Not offered", why:"Target present"}
+  ],
+  locations:["user temp","Windows temp","Windows Update download","Delivery Optimization","WER queues","servicing logs","upgrade leftovers","thumbnail cache","Chrome cache","Edge cache","Brave cache","Firefox cache","Recycle Bin","Prefetch","NVIDIA shader cache"]
+};
+
+const RAIL=[
+  {k:"decisions", label:"Decisions", badge:4},
+  {k:"startup", label:"Startup items", ct:164},
+  {k:"apps", label:"Installed apps", ct:293},
+  {k:"junk", label:"Junk files", ct:15},
+  {k:"services", label:"Services", ct:92},
+  {k:"sep"},
+  {k:"receipt", label:"Receipt"},
+  {k:"scan", label:"Re-scan"}
+];
+const FILTERS={
+  startup:[["all","All 164"],["flagged","Flagged 0"],["enabled","Enabled 133"],["off","Already off 31"],["prot","Protected 51"]],
+  apps:[["all","All 293"],["flagged","Flagged 5"],["used","Used 51"],["unknown","Cannot judge 242"],["prot","Never considered"]],
+  junk:[["all","All 15"],["flagged","Offered 7"],["inv","Inventory only 8"]],
+  services:[["all","All 92"],["flagged","Flagged 1"],["prot","Protected 10"]]
+};
+
+let view="decisions", filter="all", picked=new Set(), inspect=null, scanT=null;
+const $=(s,r=document)=>r.querySelector(s);
+const pillCls=s=>s==="s"?"p-safe":s==="a"?"p-rev":s==="r"?"p-stop":"p-info";
+const stCls=s=>s==="s"?"st-s":s==="a"?"st-a":s==="r"?"st-r":"st-n";
+
+function go(v){ view=v; filter="all"; inspect=null; if(v==="scan") runScan(); render(); }
+
+function renderRail(){
+  $("#rail").innerHTML = RAIL.map(r=>{
+    if(r.k==="sep") return '<div class="grp">Records</div>';
+    const on = r.k===view ? " on":"";
+    const right = r.badge ? `<span class="badge">${r.badge}</span>`
+                : r.ct ? `<span class="ct">${r.ct}</span>` : "";
+    return `<button class="${on}" data-go="${r.k}">${r.label}${right}</button>`;
+  }).join("");
+}
+
+function decisionsView(){
+  const cards = DATA.decisions.map(d=>{
+    const on = picked.has(d.id);
+    return `<div class="card ${d.sev==="s"?"s-safe":""} ${on?"pickd":""}">
+      <span class="stripe"></span>
+      <div>
+        <h3>${d.title} <span class="pill ${d.sev==="s"?"p-safe":"p-rev"}">${d.safety}</span>
+        ${d.reversible?'<span class="pill p-acc">Reversible</span>':""}</h3>
+        <p>${d.lead}</p>
+      </div>
+      <div class="acts">
+        <button class="btn" data-insp="${d.id}">Details</button>
+        <button class="btn ${on?"on":"pri"}" data-pick="${d.id}">${on?"Selected":"Select"}</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  const inv = DATA.inventory.map(i=>`<div class="row">
+      <span class="lead">${i.lead}</span>
+      <span class="n">${i.n}</span>
+      <span class="why">${i.why}</span>
+      <button class="btn" data-go="${i.cat}">Show all</button>
+    </div>`).join("");
+
+  return `<div class="col">
+    <h2 class="view">4 decisions, from 564 objects inspected</h2>
+    <p class="sub">Everything below was measured on this PC at 14:24 today. Nothing has been changed.
+      Each card carries the evidence for its own claim &mdash; there is no summary here that the rows underneath do not support.</p>
+    <p class="hd">Needs a decision</p>
+    <div class="queue">${cards}</div>
+    <p class="hd">Inspected &mdash; nothing to decide</p>
+    <div class="inv">${inv}</div>
+    <p class="note warn"><b>242 of 293 applications could not be judged.</b> Windows does not record last-use
+      for most software. That is reported as unknown rather than guessed at, and an application this tool
+      cannot judge is never offered for removal.</p>
+    <p class="note"><b>Used and unknown are not stable facts about this PC.</b> Windows ages its own launch
+      history on its own schedule; two runs a day apart have given different splits with nothing done in between.</p>
+  </div>`;
+}
+
+function tableView(kind){
+  const rows = DATA[kind]||[];
+  const f = FILTERS[kind]||[];
+  const keep = r => filter==="all" ? true
+    : filter==="flagged" ? (r.s==="a"||r.s==="s")
+    : filter==="prot" ? r.s==="r"
+    : filter==="enabled" ? (r.state==="Enabled"||r.state==="Automatic")
+    : filter==="off" ? r.state==="Off"
+    : filter==="used" ? (r.found==="UserAssist")
+    : filter==="unknown" ? (r.lbl==="Cannot judge")
+    : filter==="inv" ? r.lbl==="Inventory only" : true;
+  const shown = rows.filter(keep);
+
+  const chips = f.map(([k,l])=>`<button class="chip ${filter===k?"on":""}" data-filter="${k}">${l}</button>`).join("");
+
+  let head, body;
+  if(kind==="junk"){
+    head = `<tr><th></th><th>Location</th><th class="num">On disk now</th><th class="num">Files</th><th>Older than</th><th>Share</th><th>Safety</th></tr>`;
+    body = shown.map((r,i)=>`<tr class="pick ${inspect===kind+i?"sel":""}" data-row="${kind+i}">
+      <td><span class="stripe-c ${stCls(r.s)}"></span></td>
+      <td>${r.n}${r.bd&&r.bd.length?` <span class="qual">&middot; ${r.bd.length} parts</span>`:""}</td>
+      <td class="num">${r.size}</td><td class="num dim">${r.files}</td>
+      <td class="dim">${r.win}</td>
+      <td class="num dim">${r.pct?r.pct+"%":"—"}</td>
+      <td><span class="pill ${pillCls(r.s)}">${r.lbl}</span></td></tr>`).join("");
+  } else if(kind==="apps"){
+    head = `<tr><th></th><th>Application</th><th>Identity</th><th>Found by</th><th>Why</th><th>Safety</th></tr>`;
+    body = shown.map((r,i)=>`<tr class="pick ${inspect===kind+i?"sel":""}" data-row="${kind+i}">
+      <td><span class="stripe-c ${stCls(r.s)}"></span></td>
+      <td>${r.n}${r.q?` <span class="qual">&middot; ${r.q}</span>`:""}</td>
+      <td class="mono faint" style="font-size:.72rem">${r.id}</td>
+      <td class="dim">${r.found}</td><td class="faint">${r.why}</td>
+      <td><span class="pill ${pillCls(r.s)}">${r.lbl}</span></td></tr>`).join("");
+  } else {
+    head = `<tr><th></th><th>Entry</th><th>Mechanism</th><th>Publisher</th><th>State</th><th>Safety</th></tr>`;
+    body = shown.map((r,i)=>`<tr class="pick ${inspect===kind+i?"sel":""}" data-row="${kind+i}">
+      <td><span class="stripe-c ${stCls(r.s)}"></span></td>
+      <td>${r.n}${r.q?` <span class="qual">&middot; ${r.q}</span>`:""}</td>
+      <td class="dim mono" style="font-size:.75rem">${r.mech||"Service"}</td>
+      <td class="dim">${r.pub||"—"}</td><td class="dim">${r.state}</td>
+      <td><span class="pill ${pillCls(r.s)}">${r.lbl}</span></td></tr>`).join("");
+  }
+
+  const titles={startup:"Startup items",apps:"Installed apps",junk:"Junk files",services:"Services"};
+  const subs={
+    startup:"164 entries across four mechanisms. 31 are already off &mdash; recorded, and never re-enabled by this tool. 51 scheduled tasks in protected Windows namespaces were never considered.",
+    apps:"293 applications. The identity column is the join key, not the display name &mdash; two rows here share the name \"Microsoft Copilot\" and are different registrations.",
+    junk:"15 locations measured, each sized on its own. What is below is what is on disk now, not a promise about what this PC will do afterwards.",
+    services:"92 services set to start automatically. 10 are held back as protected whatever else is true about them; 24 driver services were excluded structurally."
+  };
+
+  return `<div class="col">
+    <h2 class="view">${titles[kind]}</h2>
+    <p class="sub">${subs[kind]}</p>
+    <div class="chips">${chips}</div>
+    <div class="tw"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <p class="note">Showing <b>${shown.length}</b> of ${rows.length} loaded rows. This prototype carries a
+      representative sample; the real screen renders every row the scan produced.</p>
+  </div>`;
+}
+
+function receiptView(){
+  return `<div class="col">
+    <h2 class="view">What this tool has done</h2>
+    <p class="sub">Derived from the append-only ledger at
+      <span class="mono">C:\\ProgramData\\win11-optimizer\\actions.jsonl</span>. It reports what was
+      actually changed and what was actually reclaimed &mdash; never an estimate, never a benefit.</p>
+    <div class="tw"><table>
+      <thead><tr><th>When</th><th>What</th><th>Change</th><th>Result</th><th>Action id</th><th></th></tr></thead>
+      <tbody>
+        <tr><td class="dim mono" style="font-size:.75rem">28 Aug 06:02</td><td>Razer Chroma SDK Server</td>
+          <td class="mono dim">Start 2 &rarr; 4</td><td><span class="pill p-safe">Succeeded</span></td>
+          <td class="mono faint" style="font-size:.72rem">a41f&hellip;9c2</td><td><button class="btn">Undo</button></td></tr>
+        <tr><td class="dim mono" style="font-size:.75rem">28 Aug 06:04</td><td>Razer Chroma SDK Server</td>
+          <td class="mono dim">Start 4 &rarr; 2</td><td><span class="pill p-acc">Undo of a41f&hellip;9c2</span></td>
+          <td class="mono faint" style="font-size:.72rem">b77e&hellip;13d</td><td></td></tr>
+      </tbody>
+    </table></div>
+    <p class="note"><b>2 actions recorded. Nothing is currently changed on this PC.</b> An undo is a new
+      entry pointing at the one it reversed &mdash; the ledger is never rewritten, so the history shows both
+      that it happened and that it was put back.</p>
+    <p class="note">Disk reclaimed: <b>0 bytes</b>. No delete route has ever been carried out on this machine.</p>
+  </div>`;
+}
+
+function scanView(){
+  const phases=["Reading what starts with this PC","Reading installed applications","Checking against the curated list","Measuring the junk-file locations"];
+  return `<div class="col"><div class="scan">
+    <h2 class="view">Scanning</h2>
+    <p class="sub">Nothing is changed while this runs. Every phase names what it is doing, and the
+      slow one names the location it is on &mdash; a run that has stopped should never look like a run
+      that is working.</p>
+    <div id="phases">${phases.map((p,i)=>`<div class="ph" id="ph${i}"><span>${p}</span><span class="t"></span></div>`).join("")}</div>
+    <div class="bar"><span id="bar" style="width:0%"></span></div>
+    <p class="cur" id="cur">starting&hellip;</p>
+  </div></div>`;
+}
+
+function inspector(){
+  if(!inspect) return `<div class="col insp"><p class="hd">Selected</p>
+    <p class="empty">Nothing selected.<br>Pick a decision or a row to see its full record &mdash;
+    identity, evidence, route and whether it can be undone.</p></div>`;
+
+  const d = DATA.decisions.find(x=>x.id===inspect);
+  if(d){
+    const kv = Object.entries(d.kv).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("");
+    return `<div class="col insp"><p class="hd">Selected</p>
+      <h3 style="margin:0 0 .7rem;font-size:1rem;font-weight:600;">${d.title}</h3>
+      <dl class="kv">${kv}</dl>
+      <p class="note">${d.note}</p>
+      ${d.route!=="ServiceStartupType"
+        ? `<p class="note stop"><b>This build will not carry this out.</b> <span class="pill p-stop">Refused</span>
+           Only the service startup-type route is performed. The plan is still shown in full.</p>`
+        : `<p class="note"><b>This build does carry this out.</b> <span class="pill p-safe">Performed</span>
+           It is the one route whose ledger record is enough to reverse it exactly.</p>`}
+    </div>`;
+  }
+
+  const m = inspect.match(/^([a-z]+)(\d+)$/); if(!m) return "";
+  const [_,kind,ix] = m; const r = DATA[kind][+ix]; if(!r) return "";
+  let kv;
+  if(kind==="junk") kv = {"Location":r.n,"On disk now":r.size+" / "+r.files+" files","Age window":r.win,"Share of category":(r.pct||0)+"%","Safety":r.lbl};
+  else if(kind==="apps") kv = {"Application":r.n,"Identity":r.id,"Kind":r.q||"Registry","Found by":r.found,"Why":r.why,"Safety":r.lbl};
+  else kv = {"Entry":r.n,"Mechanism":r.mech||"Service","Publisher":r.pub||"—","State":r.state,"Why":r.why,"Safety":r.lbl};
+
+  const bd = (r.bd&&r.bd.length)
+    ? `<p class="hd" style="margin-top:1rem">Made up of</p><div class="bd">${r.bd.map(([a,b])=>
+        `<div class="r"><span class="nm">${a}</span><span class="v">${b}</span></div>`).join("")}</div>
+       <p class="note">The row covers all of these together. <b>A single part cannot be selected on its
+       own</b> &mdash; the tool deletes a location, and splitting the row would split the id the ledger records.</p>`
+    : "";
+
+  return `<div class="col insp"><p class="hd">Selected</p>
+    <h3 style="margin:0 0 .7rem;font-size:1rem;font-weight:600;">${r.n}</h3>
+    <dl class="kv">${Object.entries(kv).map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${r.why&&kind!=="apps"?`<p class="note">${r.why}</p>`:""}
+    ${bd}
+    ${r.s==="r"?`<p class="note stop"><b>Held back on purpose.</b> Protected classes are never offered,
+      and a proved orphan does not override the security class &mdash; anti-tamper software hides its own
+      binary, so "the file is missing" is exactly what tamper protection looks like.</p>`:""}</div>`;
+}
+
+function actionBar(){
+  const n=picked.size;
+  if(view==="scan") return `<span class="cnt">Scanning &mdash; nothing on this PC has been changed.</span>`;
+  const svc = [...picked].every(id=>{const d=DATA.decisions.find(x=>x.id===id);return d&&d.route==="ServiceStartupType";});
+  return `<span class="cnt">${n?`<b>${n}</b> selected`:"Nothing selected"}${
+      n&&!svc?` &mdash; <span style="color:var(--refuse)">mixes routes this build will not perform</span>`:""}</span>
+    <span class="sp">
+      <button class="btn" data-clear="1"${n?"":" disabled"}>Clear</button>
+      <button class="btn big pri" data-apply="1"${n?"":" disabled"}>Review plan &amp; apply</button>
+    </span>`;
+}
+
+function planModal(){
+  const items=[...picked].map(id=>DATA.decisions.find(x=>x.id===id)).filter(Boolean);
+  const bad=items.filter(d=>d.route!=="ServiceStartupType");
+  const lines=items.map(d=>{
+    const ok=d.route==="ServiceStartupType";
+    return `<span class="h">${d.title}</span>\n  route      ${d.route}\n  reversible ${d.reversible?"yes":"no"}\n  status     ${ok?'<span class="g">will be carried out</span>':'<span class="r">REFUSED — this build performs only ServiceStartupType</span>'}\n`;
+  }).join("\n");
+
+  return `<div class="col">
+    <h2 class="view">The plan</h2>
+    <p class="sub">Every plan is offered with <span class="mono">-WhatIf</span> first. <b>One refusal refuses
+      the whole run</b> &mdash; all of it happens or none of it does, and nothing has been written yet.</p>
+    <div class="plan">${lines}</div>
+    ${bad.length
+      ? `<p class="note stop"><b>This run will not proceed.</b> ${bad.length} of ${items.length} selected
+         ${bad.length===1?"item is":"items are"} on a route this build does not perform, so nothing is
+         attempted and the ledger stays untouched. Deselect ${bad.map(b=>"&ldquo;"+b.title+"&rdquo;").join(", ")}
+         to continue with the rest.</p>
+         <div class="chips" style="margin-top:1rem"><button class="btn" data-go="decisions">Back</button></div>`
+      : `<p class="note"><b>A restore point will be attempted first</b> &mdash; best effort only; Windows allows
+         one per 24 hours and may decline. The ledger is the real record.</p>
+         <div class="chips" style="margin-top:1rem">
+           <button class="btn" data-go="decisions">Back</button>
+           <button class="btn big pri" data-confirm="1">Carry out 1 change</button></div>`}
+  </div>`;
+}
+
+function doneView(){
+  return `<div class="col">
+    <h2 class="view">Done</h2>
+    <p class="sub">One change carried out and recorded. This is the receipt, derived from the ledger.</p>
+    <div class="plan"><span class="h">Razer Chroma SDK Server</span>
+  startup type   <span class="a">Automatic (2)</span> &rarr; <span class="g">Disabled (4)</span>
+  action id      <span class="h">c93a1f4e-77b2-4d10-9e55-0a2c8b61d3f7</span>
+  result         <span class="g">Succeeded</span>
+  reversible     yes &mdash; Undo restores 2</div>
+    <p class="note"><b>Disk reclaimed: 0 bytes. Items removed: 0.</b> One service startup type was changed.
+      This tool does not tell you your PC is faster, because it did not measure that.</p>
+    <div class="chips" style="margin-top:1rem">
+      <button class="btn" data-go="receipt">Open the receipt</button>
+      <button class="btn" data-go="decisions">Back to decisions</button></div>
+  </div>`;
+}
+
+function render(){
+  renderRail();
+  const main=$("#main");
+  let inner;
+  if(view==="decisions") inner=decisionsView();
+  else if(view==="receipt") inner=receiptView();
+  else if(view==="scan") inner=scanView();
+  else if(view==="plan") inner=planModal();
+  else if(view==="done") inner=doneView();
+  else inner=tableView(view);
+
+  const showInsp = ["decisions","startup","apps","junk","services"].includes(view);
+  main.className = "main"+(showInsp?" withinsp":"");
+  main.innerHTML = inner + (showInsp?inspector():"");
+  $("#abar").innerHTML = ["plan","done","scan","receipt"].includes(view)
+    ? `<span class="cnt">${view==="done"?"Nothing further is pending.":"Nothing on this PC has been changed."}</span>`
+    : actionBar();
+}
+
+document.addEventListener("click",e=>{
+  const t=e.target.closest("[data-go],[data-pick],[data-insp],[data-filter],[data-row],[data-clear],[data-apply],[data-confirm]");
+  if(!t) return;
+  if(t.dataset.go) return go(t.dataset.go);
+  if(t.dataset.pick){ const id=t.dataset.pick; picked.has(id)?picked.delete(id):picked.add(id); inspect=id; return render(); }
+  if(t.dataset.insp){ inspect=t.dataset.insp; return render(); }
+  if(t.dataset.filter){ filter=t.dataset.filter; inspect=null; return render(); }
+  if(t.dataset.row){ inspect=t.dataset.row; return render(); }
+  if(t.dataset.clear){ picked.clear(); inspect=null; return render(); }
+  if(t.dataset.apply){ view="plan"; return render(); }
+  if(t.dataset.confirm){ view="done"; picked.clear(); return render(); }
+});
+
+function runScan(){
+  if(scanT) clearInterval(scanT);
+  let step=0; const total=DATA.locations.length+3;
+  const times=["2.1 s","3.4 s","0.2 s",""];
+  setTimeout(()=>{
+    scanT=setInterval(()=>{
+      const bar=$("#bar"), cur=$("#cur"); if(!bar){clearInterval(scanT);return;}
+      step++;
+      const pct=Math.min(100,Math.round(step/total*100));
+      bar.style.width=pct+"%";
+      for(let i=0;i<4;i++){
+        const el=$("#ph"+i); if(!el) continue;
+        const at = i<3 ? step>i : step>=3;
+        el.className="ph"+(step>i+ (i===3?total-4:0) ?" done":at?" now":"");
+        if(i<3&&step>i) el.querySelector(".t").textContent=times[i];
+      }
+      if(step<=3){ cur.textContent="reading…"; }
+      else if(step<total){ const li=step-3; cur.textContent=`junk · location ${li} of 15 — ${DATA.locations[li-1]}`; }
+      else { cur.textContent="complete — 15 of 15 locations, nothing skipped"; clearInterval(scanT);
+             setTimeout(()=>{ if(view==="scan") go("decisions"); },900); }
+    },260);
+  },120);
+}
+
+render();
+</script>

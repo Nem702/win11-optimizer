@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The automated half of the testing line docs\handoff\21-gui-scaffold.md
+    draws: parsing, view models, selection, and anything about what is refused
+    or held back is tested here, in C#. Rendering is checked by eye.
+
+    These results do not stay in a second place. tests\GuiShell.Tests.ps1 runs
+    this project and turns every test below into a Pester test, so that "green
+    on both shells" and "the GUI's logic is tested" are one answer.
+  -->
+
+  <PropertyGroup>
+    <AssemblyName>Win11Optimizer.Gui.Core.Tests</AssemblyName>
+    <RootNamespace>Win11Optimizer.Gui.Core.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Win11Optimizer.Gui.Core\Win11Optimizer.Gui.Core.csproj" />
+  </ItemGroup>
+
+</Project>

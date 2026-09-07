@@ -1166,9 +1166,30 @@ function Get-JunkLocationInventory {
         report themselves Skipped, and no file that was not probed can ever reach
         a Finding.
 
+    .PARAMETER OnProgress
+        Called once per curated location, BEFORE that location is measured, with
+        one record: Index (1-based), Count, Id and DisplayName.
+
+        This is the only phase of the whole tool where the work is a long list a
+        person could watch go by -- roughly 26,000 files here -- and until P6-C1
+        it went past in silence. A caller that wants to say what is happening
+        supplies this; every existing caller omits it and nothing changes for
+        them.
+
+        NOT NAMED -ProgressAction. That is a common parameter from PowerShell
+        7.4 onwards and the name would collide with the one the engine binds for
+        free.
+
+        It is NOT wrapped in a try/catch. A reporter that throws is a caller's
+        defect, and swallowing it here would hide the failure inside the scan
+        that was supposed to be reporting its progress.
+
     .EXAMPLE
         $inventory = Get-JunkLocationInventory
         $inventory.Locations | Format-Table Id, Status, FileCount, TotalBytes, EligibleFileCount
+
+    .EXAMPLE
+        Get-JunkLocationInventory -OnProgress { param($Location) Write-Host $Location.DisplayName }
 
     .OUTPUTS
         Win11Optimizer.JunkInventory
@@ -1185,7 +1206,11 @@ function Get-JunkLocationInventory {
         [int] $MinimumAgeDays = $script:JunkDefaultMinimumAgeDays,
 
         [Parameter()]
-        [switch] $SkipInUseProbe
+        [switch] $SkipInUseProbe,
+
+        [Parameter()]
+        [AllowNull()]
+        [scriptblock] $OnProgress
     )
 
     if ($null -eq $LocationEntry) { $LocationEntry = @(Get-JunkLocationList) }
@@ -1213,7 +1238,13 @@ function Get-JunkLocationInventory {
     $statistic['InUseProbeCount']        = [long] 0
     $statistic['AgeWindowOverrideCount'] = [long] 0
 
-    foreach ($entry in @($LocationEntry)) {
+    # Counted here rather than inside the loop so the progress record can say
+    # "3 of 15" -- an index with no total is a number that tells a reader
+    # nothing about how much is left.
+    $entries = @($LocationEntry)
+    $entryIndex = 0
+
+    foreach ($entry in $entries) {
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
 
         $id            = [string](Get-OptimizerProperty -InputObject $entry -Name 'Id')
@@ -1243,6 +1274,19 @@ function Get-JunkLocationInventory {
             $statistic['AgeWindowOverrideCount'] = [long] $statistic['AgeWindowOverrideCount'] + 1
         }
         $entryCutoffUtc = $nowUtc.AddDays(-$effectiveDays)
+
+        # BEFORE the work, not after: the point of the record is to name what
+        # this scan is on now, and a location announced once it has finished is
+        # the one thing a progress indicator cannot use.
+        $entryIndex++
+        if ($null -ne $OnProgress) {
+            $null = & $OnProgress ([pscustomobject][ordered]@{
+                Index       = $entryIndex
+                Count       = $entries.Count
+                Id          = $id
+                DisplayName = $displayName
+            })
+        }
 
         $common = @{
             Id                  = $id
@@ -1803,6 +1847,11 @@ function Invoke-JunkFileScan {
         Measure sizes but do not check files for open handles. Affected locations
         report Skipped and can produce no Findings.
 
+    .PARAMETER OnProgress
+        Passed straight through to Get-JunkLocationInventory, which calls it once
+        per curated location before measuring that location. This scan is the
+        long silent one -- see the parameter's own help there.
+
     .EXAMPLE
         $scan = Invoke-JunkFileScan
         $scan.SummaryText
@@ -1824,7 +1873,11 @@ function Invoke-JunkFileScan {
         [int] $MinimumAgeDays = $script:JunkDefaultMinimumAgeDays,
 
         [Parameter()]
-        [switch] $SkipInUseProbe
+        [switch] $SkipInUseProbe,
+
+        [Parameter()]
+        [AllowNull()]
+        [scriptblock] $OnProgress
     )
 
     $startedUtc = [datetime]::UtcNow
@@ -1857,6 +1910,10 @@ function Invoke-JunkFileScan {
         MinimumAgeDays = $MinimumAgeDays
     }
     if ($SkipInUseProbe) { $inventoryArguments['SkipInUseProbe'] = $true }
+    # Only when there is one. Splatting a $null scriptblock would bind the
+    # parameter to nothing and leave the inventory unable to tell "no reporter"
+    # from "a reporter that does nothing".
+    if ($null -ne $OnProgress) { $inventoryArguments['OnProgress'] = $OnProgress }
 
     $inventory = Get-JunkLocationInventory @inventoryArguments
     $locations = @($inventory.Locations)

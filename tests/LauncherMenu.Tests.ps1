@@ -233,18 +233,24 @@ Describe 'P5-C1 the loader does not dot-source the launcher' {
         # the installed shortcut runs, which imports the module exactly as
         # Entry.ps1 does and must not be dot-sourced for exactly the same reason.
         #
+        # AMENDED AGAIN BY P6-C1, which added a third: App\Scan.ps1, what a
+        # second process runs to get one scan as JSON Lines on stdout. Same
+        # reason again, and the reason the LIST is not what this test really
+        # pins: it derives the launchers from the AST below, so a fourth one
+        # arriving unexcluded fails here without anybody editing a literal.
+        #
         # What the count still asserts is the thing that mattered: ONE -Exclude
         # in the whole loader. A second one would be a second list, and the
         # second list is the one nobody looks at.
         $psm1 = [System.IO.File]::ReadAllText($script:ModulePath)
-        $psm1 | Should -Match "Get-OptimizerSourceFile[^\r\n]*'App'[^\r\n]*-Exclude\s+'Entry\.ps1',\s*'Bootstrap\.ps1'"
+        $psm1 | Should -Match "Get-OptimizerSourceFile[^\r\n]*'App'[^\r\n]*-Exclude\s+'Entry\.ps1',\s*'Bootstrap\.ps1',\s*'Scan\.ps1'"
 
         @([regex]::Matches($psm1, '-Exclude\s+')).Count | Should -Be 1
 
         # And the list is the launchers, all of them: every .ps1 in App\ that
         # CALLS Import-Module is excluded, and nothing else is. Read from the
-        # AST, not grepped -- both launchers also name Import-Module in the
-        # comment explaining why they must not be dot-sourced, and a sentence
+        # AST, not grepped -- every launcher also names Import-Module in the
+        # comment explaining why it must not be dot-sourced, and a sentence
         # about a command is not a call to it.
         $launcher = @(Get-ChildItem -LiteralPath $script:AppFolder -Filter '*.ps1' | Where-Object {
             $ast = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref] $null, [ref] $null)
@@ -254,18 +260,27 @@ Describe 'P5-C1 the loader does not dot-source the launcher' {
                 $node.GetCommandName() -eq 'Import-Module'
             }, $true)).Count -gt 0
         } | ForEach-Object { $_.Name } | Sort-Object)
-        $launcher | Should -Be @('Bootstrap.ps1', 'Entry.ps1')
+        $launcher | Should -Be @('Bootstrap.ps1', 'Entry.ps1', 'Scan.ps1')
+
+        # THE MECHANICAL HALF, and it is the one that matters: every launcher the
+        # AST found is named on the one -Exclude. A list compared against a
+        # literal only fails when somebody remembers to update the literal.
+        foreach ($name in $launcher) {
+            $psm1 | Should -Match ("-Exclude[^\r\n]*" + [regex]::Escape("'$name'"))
+        }
     }
 
-    It 'actually drops Entry.ps1 and keeps Menu.ps1' {
+    It 'actually drops the launchers and keeps Menu.ps1' {
         $files = InModuleScope Win11Optimizer.Engine -Parameters @{ Folder = $script:AppFolder } {
             param($Folder)
-            Get-OptimizerSourceFile -Path $Folder -Name 'App' -Exclude 'Entry.ps1', 'Bootstrap.ps1'
+            Get-OptimizerSourceFile -Path $Folder -Name 'App' -Exclude 'Entry.ps1', 'Bootstrap.ps1', 'Scan.ps1'
         }
 
         $leaf = @($files | ForEach-Object { [System.IO.Path]::GetFileName($_) })
         $leaf | Should -Contain 'Menu.ps1'
         $leaf | Should -Not -Contain 'Entry.ps1'
+        $leaf | Should -Not -Contain 'Bootstrap.ps1'
+        $leaf | Should -Not -Contain 'Scan.ps1'
     }
 
     It 'throws when an exclusion matches nothing, rather than silently excluding nothing' {

@@ -303,6 +303,9 @@
       <Component Id="C_App_Menu_ps1" Guid="*">
         <File Id="F_App_Menu_ps1" Name="Menu.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\App\Menu.ps1" KeyPath="yes" />
       </Component>
+      <Component Id="C_App_Scan_ps1" Guid="*">
+        <File Id="F_App_Scan_ps1" Name="Scan.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\App\Scan.ps1" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
     <ComponentGroup Id="CG.Engine.Data" Directory="EngineDataFolder">
       <Component Id="C_Data_junk_locations_json" Guid="*">
@@ -355,6 +358,9 @@
     <ComponentGroup Id="CG.Engine.Review" Directory="EngineReviewFolder">
       <Component Id="C_Review_Execute_ps1" Guid="*">
         <File Id="F_Review_Execute_ps1" Name="Execute.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Review\Execute.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="C_Review_Json_ps1" Guid="*">
+        <File Id="F_Review_Json_ps1" Name="Json.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Review\Json.ps1" KeyPath="yes" />
       </Component>
       <Component Id="C_Review_Screen_ps1" Guid="*">
         <File Id="F_Review_Screen_ps1" Name="Screen.ps1" Source="$(var.SourceRoot)\src\Win11Optimizer.Engine\Review\Screen.ps1" KeyPath="yes" />

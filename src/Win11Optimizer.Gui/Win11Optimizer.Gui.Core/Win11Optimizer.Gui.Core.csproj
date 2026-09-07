@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE TESTED LAYER. It references no WinForms and no WebView2, on purpose:
+    docs\handoff\21-gui-scaffold.md draws the testing line here, and a data layer
+    that dragged a UI toolkit in with it could not be tested on a machine with no
+    WebView2 runtime.
+
+    System.Web.Extensions is in the box on .NET Framework. It carries
+    JavaScriptSerializer, which is the JSON tokenizer this assembly uses, so the
+    shipped application gains no DLL for reading the contract.
+  -->
+
+  <PropertyGroup>
+    <AssemblyName>Win11Optimizer.Gui.Core</AssemblyName>
+    <RootNamespace>Win11Optimizer.Gui.Core</RootNamespace>
+    <AssemblyTitle>win11-optimizer GUI data layer</AssemblyTitle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+</Project>
