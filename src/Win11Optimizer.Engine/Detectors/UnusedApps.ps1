@@ -986,6 +986,24 @@ function Find-UnusedApp {
     .PARAMETER ExclusionEntry
         Entries from Get-UnusedAppExclusionList.
 
+    .PARAMETER Verdict
+        A list this function records into: one New-InventoryVerdict per
+        classification it flagged and per classification the exclusion gate held
+        back, keyed by the app's own Id.
+
+        IT IS AN OUT-COLLECTION RATHER THAN A SECOND RETURN VALUE because this
+        function's output is a Finding stream that four callers already consume,
+        and mixing a second record type into it would break every one of them.
+        Optional, so every existing call site is unchanged.
+
+        WHY IT EXISTS AT ALL, WHICH IS THE POINT OF P6-C3. The exclusion gate
+        below is the only place that decides an Unused app is held back, and
+        before this it decided it and threw the answer away -- Invoke-UnusedAppScan
+        then ran the SAME MATCH A SECOND TIME over the same classifications
+        purely to produce ExcludedCount. Two evaluations of one safety rule is
+        two places for it to be wrong; the second one is now gone and
+        ExcludedCount is the length of what this records.
+
     .EXAMPLE
         Find-UnusedApp -Classification $classifications -ExclusionEntry (Get-UnusedAppExclusionList)
     #>
@@ -999,7 +1017,11 @@ function Find-UnusedApp {
 
         [Parameter(Mandatory)]
         [ValidateNotNull()]
-        [psobject[]] $ExclusionEntry
+        [psobject[]] $ExclusionEntry,
+
+        [Parameter()]
+        [AllowNull()]
+        [System.Collections.Generic.List[psobject]] $Verdict
     )
 
     $emitted = @{}
@@ -1013,11 +1035,25 @@ function Find-UnusedApp {
         $app = Get-OptimizerProperty -InputObject $record -Name 'App'
         if ($null -eq $app) { continue }
 
+        # The app's own identity, read before the gate because a held-back verdict
+        # is keyed on it. It is NOT $identifier below: that one becomes the
+        # package family name for an Appx source, which is the Finding's key and
+        # not the inventory's.
+        $appId = [string](Get-OptimizerProperty -InputObject $app -Name 'Id')
+
         # The exclusion gate. Checked here, in the one place a Finding is built, so
-        # it cannot be bypassed by handing in a classification built elsewhere.
+        # it cannot be bypassed by handing in a classification built elsewhere --
+        # and recorded here, in that same one place, so that what it held back is
+        # a list rather than a number arrived at by evaluating the rule twice.
         $exclusion = Get-UnusedAppExclusionMatch -InstalledApp $app -ExclusionEntry $ExclusionEntry
         if ($null -ne $exclusion) {
             Write-Verbose "Excluded '$(Get-OptimizerProperty -InputObject $record -Name 'DisplayName')' via exclusion entry '$(Get-OptimizerProperty -InputObject $exclusion -Name 'Id')'."
+            if ($null -ne $Verdict -and -not [string]::IsNullOrWhiteSpace($appId)) {
+                $Verdict.Add((New-InventoryVerdict -Id $appId -Class $script:InventoryVerdictHeldBack `
+                    -RuleId ([string](Get-OptimizerProperty -InputObject $exclusion -Name 'Id')) `
+                    -RuleClass ([string](Get-OptimizerProperty -InputObject $exclusion -Name 'Class')) `
+                    -Reason ([string](Get-OptimizerProperty -InputObject $exclusion -Name 'Reason'))))
+            }
             continue
         }
 
@@ -1104,6 +1140,14 @@ function Find-UnusedApp {
         }
 
         $evidence.Add('This is a heuristic finding. Windows records launches only patchily, so "no launch recorded" is weaker than "never launched" -- check whether you still want this before removing it.')
+
+        # The flagged verdict, recorded HERE and not derived by a caller. An
+        # Appx Finding is keyed on the package family name, so a consumer joining
+        # the inventory to the Findings on Id alone would miss every Appx row and
+        # draw it twice -- once as a finding and once as "not flagged".
+        if ($null -ne $Verdict -and -not [string]::IsNullOrWhiteSpace($appId)) {
+            $Verdict.Add((New-InventoryVerdict -Id $appId -Class $script:InventoryVerdictFlagged -FindingId $identifier))
+        }
 
         New-Finding -Category 'UnusedApp' `
             -Id $identifier `
@@ -1346,7 +1390,14 @@ function Invoke-UnusedAppScan {
         -UnusedWindowDays $UnusedWindowDays `
         -MinimumAgeDays $MinimumAgeDays)
 
-    $findings = @(Find-UnusedApp -Classification $classifications -ExclusionEntry $exclusions |
+    # The matcher records what it flagged and what its exclusion gate held back
+    # into this list as it goes. P6-C3: ExcludedCount is now the length of what
+    # the gate recorded, and the second pass that used to re-run the same match
+    # over the same classifications to arrive at the same number is DELETED. One
+    # evaluation of the rule, in the one place a Finding is built.
+    $verdicts = New-Object System.Collections.Generic.List[psobject]
+
+    $findings = @(Find-UnusedApp -Classification $classifications -ExclusionEntry $exclusions -Verdict $verdicts |
         Sort-Object DisplayName)
 
     $usedCount    = @($classifications | Where-Object { $_.State -eq $script:UnusedAppStateUsed }).Count
@@ -1355,11 +1406,7 @@ function Invoke-UnusedAppScan {
 
     # How many Unused classifications the exclusion list held back. Reported so a
     # zero-Finding scan can be told apart from an exclusion list that ate the lot.
-    $excludedCount = 0
-    foreach ($record in $classifications) {
-        if ($record.State -ne $script:UnusedAppStateUnused) { continue }
-        if ($null -ne (Get-UnusedAppExclusionMatch -InstalledApp $record.App -ExclusionEntry $exclusions)) { $excludedCount++ }
-    }
+    $excludedCount = @($verdicts | Where-Object { $_.Class -eq $script:InventoryVerdictHeldBack }).Count
 
     $totalTimer.Stop()
 
@@ -1388,6 +1435,11 @@ function Invoke-UnusedAppScan {
             UnknownCount     = $unknownCount
             ExcludedCount    = $excludedCount
             Classifications  = [psobject[]] $classifications
+            # What the matcher did with each classification it acted on, keyed by
+            # the app's own Id. A classification with no verdict here was looked
+            # at and nothing was said about it -- Used, or Unknown -- which is a
+            # third thing and is deliberately not a verdict.
+            InventoryVerdict = [psobject[]] @($verdicts.ToArray())
         })
 
     Write-OptimizerLog -EventName 'UnusedAppScanCompleted' `

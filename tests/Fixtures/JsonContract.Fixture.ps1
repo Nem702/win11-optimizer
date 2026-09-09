@@ -149,6 +149,85 @@ function New-JsonContractFixtureSource {
     } $Name $Status $Reason $ItemCount $DurationSeconds
 }
 
+function New-JsonContractFixtureVerdict {
+    # One inventory verdict, through the engine's own factory so the fixture
+    # cannot describe a shape the engine would refuse to make.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Id,
+        [Parameter(Mandatory)] [string] $Class,
+        [Parameter()] [AllowNull()] [string] $FindingId,
+        [Parameter()] [AllowNull()] [string] $RuleId,
+        [Parameter()] [AllowNull()] [string] $RuleClass,
+        [Parameter()] [AllowNull()] [string] $Reason
+    )
+
+    & (Get-Module Win11Optimizer.Engine) {
+        param($Id, $Class, $FindingId, $RuleId, $RuleClass, $Reason)
+        $arguments = @{ Id = $Id; Class = $Class }
+        foreach ($pair in @(
+            @{ Name = 'FindingId'; Value = $FindingId }
+            @{ Name = 'RuleId';    Value = $RuleId }
+            @{ Name = 'RuleClass'; Value = $RuleClass }
+            @{ Name = 'Reason';    Value = $Reason }
+        )) {
+            if (-not [string]::IsNullOrWhiteSpace($pair.Value)) { $arguments[$pair.Name] = $pair.Value }
+        }
+        New-InventoryVerdict @arguments
+    } $Id $Class $FindingId $RuleId $RuleClass $Reason
+}
+
+function New-JsonContractFixtureStartupItem {
+    # One startup inventory record, in the shape Get-StartupItemInventory
+    # produces. TargetExists is a TRI-STATE and the fixture uses all three
+    # values on purpose: only $false is an orphan, and $null must survive the
+    # projection as null rather than collapsing into $false.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Mechanism,
+        [Parameter(Mandatory)] [string] $Id,
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter(Mandatory)] [string] $Category,
+        [Parameter(Mandatory)] [string] $Scope,
+        [Parameter(Mandatory)] [string] $EnabledState,
+        [Parameter()] [AllowNull()] [string] $Publisher,
+        [Parameter()] [AllowNull()] [Nullable[bool]] $TargetExists,
+        [Parameter()] [bool] $IsProtectedNamespace = $false
+    )
+
+    [pscustomobject]@{
+        Mechanism            = $Mechanism
+        Id                   = $Id
+        Name                 = $DisplayName
+        DisplayName          = $DisplayName
+        Category             = $Category
+        Scope                = $Scope
+        Publisher            = $Publisher
+        EnabledState         = $EnabledState
+        TargetExists         = $TargetExists
+        IsProtectedNamespace = $IsProtectedNamespace
+    }
+}
+
+function New-JsonContractFixtureApp {
+    # One installed-app record, through the engine's own factory so the fixture
+    # cannot describe a shape New-InstalledApp would refuse.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Source,
+        [Parameter(Mandatory)] [string] $Id,
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter()] [AllowNull()] [string] $Publisher,
+        [Parameter()] [AllowNull()] [string] $Detail
+    )
+
+    & (Get-Module Win11Optimizer.Engine) {
+        param($Source, $Id, $DisplayName, $Publisher, $Detail)
+        New-InstalledApp -Source $Source -Id $Id -Name $DisplayName -DisplayName $DisplayName `
+            -Publisher $Publisher -Detail $Detail
+    } $Source $Id $DisplayName $Publisher $Detail
+}
+
 function New-JsonContractFixtureScan {
     # One scan result, through New-ScanResult, so IsComplete / IncompleteReason
     # / RefusedSourceName are derived by the engine rather than asserted by the
@@ -209,36 +288,134 @@ function Get-JsonContractFixtureScreen {
     $serviceFinding | Add-Member -MemberType NoteProperty -Name 'FindingReason' -Value 'Curated'
     $serviceFinding | Add-Member -MemberType NoteProperty -Name 'StartupEntryId' -Value 'fixture-service'
 
+    # THE INVENTORY, AND IT IS ARITHMETICALLY CONSISTENT WITH THE COUNTS BESIDE
+    # IT. P6-C3 added Inventory[] to every section, and the assertion that makes
+    # it worth anything is that its length and its held-back count agree with
+    # the scan's own InventoryCount, ProtectedTaskCount and ProtectedServiceCount.
+    # A fixture whose counts were free-standing numbers could not carry that
+    # assertion at all, so these seven records ARE the counts below.
+    #
+    # Between them they exercise: every mechanism, all three EnabledStates, all
+    # three values of the TargetExists tri-state, a protected-namespace task, a
+    # service the exclusion list held back, and two items that became Findings.
+    $startupItems = @(
+        (New-JsonContractFixtureStartupItem -Mechanism 'RunKey' -Id 'HKCU\Run\Fixture' `
+            -DisplayName 'Fixture startup item' -Category 'StartupItem' -Scope 'User' `
+            -EnabledState 'Enabled' -Publisher 'Fixture Ltd' -TargetExists $false)
+        (New-JsonContractFixtureStartupItem -Mechanism 'RunKey' -Id 'HKCU\Run\Quiet' `
+            -DisplayName 'Fixture quiet entry' -Category 'StartupItem' -Scope 'User' `
+            -EnabledState 'Enabled' -Publisher $null -TargetExists $null)
+        (New-JsonContractFixtureStartupItem -Mechanism 'StartupFolder' -Id 'C:\Fixture\Startup\thing.lnk' `
+            -DisplayName 'Fixture shortcut' -Category 'StartupItem' -Scope 'Machine' `
+            -EnabledState 'Disabled' -Publisher 'Fixture Ltd' -TargetExists $true)
+        (New-JsonContractFixtureStartupItem -Mechanism 'StartupFolder' -Id 'C:\Fixture\Startup\murky.lnk' `
+            -DisplayName 'Fixture murky shortcut' -Category 'StartupItem' -Scope 'Machine' `
+            -EnabledState 'Unknown' -Publisher $null -TargetExists $null)
+        (New-JsonContractFixtureStartupItem -Mechanism 'ScheduledTask' -Id '\Microsoft\Windows\Fixture\Task' `
+            -DisplayName 'Fixture protected task' -Category 'StartupItem' -Scope 'Machine' `
+            -EnabledState 'Enabled' -Publisher 'Microsoft Corporation' -TargetExists $true `
+            -IsProtectedNamespace $true)
+        (New-JsonContractFixtureStartupItem -Mechanism 'Service' -Id 'FixtureSvc' `
+            -DisplayName 'Fixture service' -Category 'Service' -Scope 'Machine' `
+            -EnabledState 'Enabled' -Publisher 'Fixture Ltd' -TargetExists $true)
+        (New-JsonContractFixtureStartupItem -Mechanism 'Service' -Id 'FixtureProtectedSvc' `
+            -DisplayName 'Fixture protected service' -Category 'Service' -Scope 'Machine' `
+            -EnabledState 'Enabled' -Publisher 'Fixture Security Inc' -TargetExists $true)
+    )
+
     $startupScan = New-JsonContractFixtureScan -Detector 'StartupItems' -Category 'StartupItem' `
-        -InventoryCount 149 -Finding @($startupFinding, $serviceFinding) `
+        -InventoryCount $startupItems.Count -Finding @($startupFinding, $serviceFinding) `
         -Source @(
             (New-JsonContractFixtureSource -Name 'RunKey' -Status 'Succeeded' -ItemCount 40 -DurationSeconds 0.5)
             (New-JsonContractFixtureSource -Name 'ScheduledTask' -Status 'Failed' -Reason 'The task scheduler service could not be reached.' -ItemCount 0 -DurationSeconds 0.25)
         ) `
         -AdditionalProperty ([ordered]@{
-            DisabledCount         = 28
-            EnabledCount          = 121
-            UnknownStateCount     = 2
-            ProtectedTaskCount    = 7
-            ProtectedServiceCount = 10
-            MechanismCount        = [ordered]@{ RunKey = 40; StartupFolder = 2; ScheduledTask = 17; Service = 90 }
-            StartupItems          = [psobject[]] @([pscustomobject]@{ Mechanism = 'Service'; Id = 'FixtureSvc'; EnabledState = 'Enabled' })
+            DisabledCount         = 1
+            EnabledCount          = 5
+            UnknownStateCount     = 1
+            ProtectedTaskCount    = 1
+            ProtectedServiceCount = 1
+            MechanismCount        = [ordered]@{ RunKey = 2; StartupFolder = 2; ScheduledTask = 1; Service = 2 }
+            StartupItems          = [psobject[]] $startupItems
+            InventoryVerdict      = [psobject[]] @(
+                (New-JsonContractFixtureVerdict -Id 'FixtureProtectedSvc' -Class 'HeldBack' `
+                    -RuleId 'fixture-security-class' -RuleClass 'security' `
+                    -Reason 'Security software is never offered, whatever a usage heuristic says about it.')
+            )
         })
 
     # ---- unused apps ----------------------------------------------------
+    #
+    # THE APPX FINDING IS KEYED ON THE PACKAGE FAMILY NAME AND THE CLASSIFICATION
+    # ON THE APP'S OWN Id, and here they are deliberately different strings. That
+    # is the whole reason an inventory entry carries FindingId rather than
+    # leaving a consumer to match on Id: Find-UnusedApp rewrites an Appx
+    # Finding's Id, so a join on Id alone would miss the row and draw the
+    # application twice -- once as a finding, once as "nothing was said".
+    $unusedFinding = New-Finding -Category UnusedApp -Id 'Fixture.Unused_8wekyb3d8bbwe' `
+        -DisplayName 'Fixture unused app' -Confidence Heuristic `
+        -Evidence 'Not used in the last 180 days: the most recent launch recorded for it is 2026-01-02, 247 days ago.' `
+        -RemovalMethod Appx
+
+    $classifications = @(
+        [pscustomobject]@{
+            App         = (New-JsonContractFixtureApp -Source 'AppxPackage' -Id 'Fixture.Widget_8wekyb3d8bbwe' `
+                            -DisplayName 'Fixture Widget' -Publisher 'CN=Fixture' -Detail 'Fixture.Widget_1.0.0.0_x64__8wekyb3d8bbwe')
+            DisplayName = 'Fixture Widget'
+            State       = 'Unknown'
+            Reason      = 'No usage signal on this machine names this application. That is absence of evidence, not evidence of absence -- it is never reported as unused.'
+        }
+        [pscustomobject]@{
+            App         = (New-JsonContractFixtureApp -Source 'AppxPackage' -Id 'Fixture.Unused_1.0.0.0_x64__8wekyb3d8bbwe' `
+                            -DisplayName 'Fixture unused app' -Publisher 'CN=Fixture' -Detail 'Fixture.Unused_1.0.0.0_x64__8wekyb3d8bbwe')
+            DisplayName = 'Fixture unused app'
+            State       = 'Unused'
+            Reason      = 'No launch recorded in the last 180 days; the most recent one is 247 days old.'
+        }
+        [pscustomobject]@{
+            App         = (New-JsonContractFixtureApp -Source 'AppxPackage' -Id 'Fixture.Protected_8wekyb3d8bbwe' `
+                            -DisplayName 'Fixture Security Suite' -Publisher 'CN=Fixture Security Inc' -Detail 'Fixture.Protected_2.0.0.0_x64__8wekyb3d8bbwe')
+            DisplayName = 'Fixture Security Suite'
+            State       = 'Unused'
+            Reason      = 'No launch recorded in the last 180 days; the most recent one is 300 days old.'
+        }
+        [pscustomobject]@{
+            App         = (New-JsonContractFixtureApp -Source 'RegistryUninstall' -Id 'HKLM\Fixture\Uninstall\Used' `
+                            -DisplayName 'Fixture used app' -Publisher 'Fixture Ltd' -Detail 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+            DisplayName = 'Fixture used app'
+            State       = 'Used'
+            Reason      = 'Launched 4 days ago, inside the 180-day window.'
+        }
+        [pscustomobject]@{
+            App         = (New-JsonContractFixtureApp -Source 'RegistryUninstall' -Id 'HKLM\Fixture\Uninstall\Silent' `
+                            -DisplayName 'Fixture silent app' -Publisher $null -Detail 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+            DisplayName = 'Fixture silent app'
+            State       = 'Unknown'
+            Reason      = 'No usage signal on this machine names this application. That is absence of evidence, not evidence of absence -- it is never reported as unused.'
+        }
+    )
+
     $unusedScan = New-JsonContractFixtureScan -Detector 'UnusedApps' -Category 'UnusedApp' `
-        -InventoryCount 286 -Finding @() `
+        -InventoryCount $classifications.Count -Finding @($unusedFinding) `
         -Source @(
             (New-JsonContractFixtureSource -Name 'UserAssist' -Status 'Succeeded' -ItemCount 177 -DurationSeconds 0.75)
             (New-JsonContractFixtureSource -Name 'Prefetch' -Status 'Skipped' -Reason 'The prefetch folder cannot be read without administrator rights.' -ItemCount 0 -DurationSeconds 0.01)
             (New-JsonContractFixtureSource -Name 'FileSystemLastAccess' -Status 'Refused' -Reason 'Not used as a usage signal, by measurement rather than by assumption.' -ItemCount 0 -DurationSeconds 0.02)
         ) `
         -AdditionalProperty ([ordered]@{
-            ConsideredCount = 286
-            UnknownCount    = 234
-            UsedCount       = 52
-            UnusedCount     = 0
-            ExcludedCount   = 33
+            ConsideredCount  = $classifications.Count
+            UnknownCount     = 2
+            UsedCount        = 1
+            UnusedCount      = 2
+            ExcludedCount    = 1
+            Classifications  = [psobject[]] $classifications
+            InventoryVerdict = [psobject[]] @(
+                (New-JsonContractFixtureVerdict -Id 'Fixture.Unused_1.0.0.0_x64__8wekyb3d8bbwe' -Class 'Flagged' `
+                    -FindingId 'Fixture.Unused_8wekyb3d8bbwe')
+                (New-JsonContractFixtureVerdict -Id 'Fixture.Protected_8wekyb3d8bbwe' -Class 'HeldBack' `
+                    -RuleId 'antivirus-and-endpoint-security' -RuleClass 'security' `
+                    -Reason 'Security software is never flagged as unused, full stop.')
+            )
         })
 
     # ---- OEM bloatware --------------------------------------------------
@@ -247,11 +424,23 @@ function Get-JsonContractFixtureScreen {
         -Evidence 'Matches curated known-bloatware list entry fixture-widget.' -RemovalMethod Appx
     $oemFinding | Add-Member -MemberType NoteProperty -Name 'WhitelistEntryId' -Value 'fixture-widget'
 
+    # THIS SCAN PUBLISHES VERDICTS AND NO INVENTORY, which is the real shape:
+    # the Installed apps section's inventory is the unused-app scan's
+    # classifications, and the OEM scan contributes only its judgement of them.
+    # InventoryCount is larger here than the classification count on purpose --
+    # elevated, this scan reads provisioned packages the unused-app scan does
+    # not, and the two counts really do diverge.
     $oemScan = New-JsonContractFixtureScan -Detector 'OemBloatware' -Category 'OemBloatware' `
-        -InventoryCount 343 -Finding @($oemFinding) `
+        -InventoryCount 6 -Finding @($oemFinding) `
         -Source @(
             (New-JsonContractFixtureSource -Name 'AppxPackage' -Status 'Succeeded' -ItemCount 146 -DurationSeconds 1.5)
-        )
+        ) `
+        -AdditionalProperty ([ordered]@{
+            InventoryVerdict = [psobject[]] @(
+                (New-JsonContractFixtureVerdict -Id 'Fixture.Widget_8wekyb3d8bbwe' -Class 'Flagged' `
+                    -FindingId 'Fixture.Widget_8wekyb3d8bbwe')
+            )
+        })
 
     # ---- junk files -----------------------------------------------------
     $junkFinding = New-Finding -Category JunkFile -Id 'fixture-cache' `
@@ -275,8 +464,48 @@ function Get-JsonContractFixtureScreen {
         [pscustomobject]@{ Path = 'C:\Fixture\Profile 2\Cache\two.tmp'; SizeBytes = [long] 2048 }
     ))
 
+    # THREE CURATED LOCATIONS, AND ONLY ONE OF THEM PRODUCED A FINDING. That is
+    # the shape the junk inventory exists for: New-JunkLocation reports EVERY
+    # location, including the ones that produced nothing and the ones that could
+    # not be read, because "Recycle Bin: 2.3 MiB, not flagged" is inventory the
+    # user wants and "Recycle Bin" silently absent is the failure this project
+    # is built against.
+    #
+    # The third one carries Exists = $null, the second of the two tri-states in
+    # this payload. Null there means the scan could not tell, which is not the
+    # same claim as "the folder is not there".
+    $junkLocations = @(
+        [pscustomobject]@{
+            Id = 'fixture-cache'; DisplayName = 'Fixture web cache'
+            Status = 'Succeeded'; StatusReason = $null; Exists = $true; IsAssessed = $true
+            InventoryOnly = $false; InventoryOnlyReason = $null
+            FileCount = [long] 1400; TotalBytes = [long] 1400000000
+            EligibleFileCount = [long] 1234; EligibleBytes = [long] 1220410048
+            IsSizeFloor = $true; MinimumAgeDays = 30
+        }
+        [pscustomobject]@{
+            Id = 'fixture-prefetch'; DisplayName = 'Fixture prefetch folder'
+            Status = 'Succeeded'; StatusReason = $null; Exists = $true; IsAssessed = $false
+            InventoryOnly = $true
+            InventoryOnlyReason = 'This location is reported for size only. The curated list marks it as never offered for removal.'
+            FileCount = [long] 244; TotalBytes = [long] 52428800
+            EligibleFileCount = [long] 0; EligibleBytes = [long] 0
+            IsSizeFloor = $false; MinimumAgeDays = 7
+        }
+        [pscustomobject]@{
+            Id = 'windows-temp'; DisplayName = 'System temporary files'
+            Status = 'Skipped'
+            StatusReason = 'One folder under it could not be listed at this privilege level.'
+            Exists = $null; IsAssessed = $true
+            InventoryOnly = $false; InventoryOnlyReason = $null
+            FileCount = [long] 0; TotalBytes = [long] 0
+            EligibleFileCount = [long] 0; EligibleBytes = [long] 0
+            IsSizeFloor = $true; MinimumAgeDays = 7
+        }
+    )
+
     $junkScan = New-JsonContractFixtureScan -Detector 'JunkFiles' -Category 'JunkFile' `
-        -InventoryCount 15 -Finding @($junkFinding) `
+        -InventoryCount $junkLocations.Count -Finding @($junkFinding) `
         -Source @(
             (New-JsonContractFixtureSource -Name 'fixture-cache' -Status 'Succeeded' -ItemCount 1400 -DurationSeconds 3.125)
             (New-JsonContractFixtureSource -Name 'windows-temp' -Status 'Skipped' -Reason 'One folder under it could not be listed at this privilege level.' -ItemCount 0 -DurationSeconds 0.5)
@@ -284,6 +513,7 @@ function Get-JsonContractFixtureScreen {
         -AdditionalProperty ([ordered]@{
             MinimumAgeDays = 7
             SizeIsFloor    = $true
+            Locations      = [psobject[]] $junkLocations
         })
 
     $screen = Get-ReviewScreen -StartupScan $startupScan -UnusedAppScan $unusedScan `

@@ -78,6 +78,29 @@ $script:MinimumPatternPrefix = 6
 $script:InstalledAppTypeName = 'Win11Optimizer.InstalledApp'
 $script:ScanResultTypeName   = 'Win11Optimizer.ScanResult'
 $script:ScanSourceTypeName   = 'Win11Optimizer.ScanSource'
+$script:InventoryVerdictTypeName = 'Win11Optimizer.InventoryVerdict'
+
+# WHAT A DETECTOR DID WITH ONE OBJECT IT LOOKED AT. Added by chunk P6-C3.
+#
+# A detector's Findings say what it flagged. Nothing said what it DELIBERATELY
+# DID NOT flag, and the two are not the same claim: a category with no Findings
+# and a curated list that swallowed the lot look identical from the outside,
+# which is the failure mode this project is built against. The counts that
+# existed -- ProtectedServiceCount, ExcludedCount -- said HOW MANY and never
+# WHICH, so the only way to draw the held-back rows was to read a number out of
+# a headline sentence.
+#
+# 'Flagged' and 'HeldBack' are the only two values, and the omission is the
+# point: an object with no verdict was looked at and nothing was said about it.
+# A consumer must never turn that silence into either of these, the same way it
+# never infers a safety label.
+$script:InventoryVerdictFlagged  = 'Flagged'
+$script:InventoryVerdictHeldBack = 'HeldBack'
+
+$script:InventoryVerdictClasses = @(
+    $script:InventoryVerdictFlagged
+    $script:InventoryVerdictHeldBack
+)
 
 # The three uninstall views. Leaving out WOW6432Node hides most 32-bit software,
 # which on a real machine is most of the OEM-installed software.
@@ -438,6 +461,77 @@ function Get-RegistryInstalledApp {
                 -EstimatedSizeKb (ConvertTo-OptimizerEstimatedSize -Value (Get-OptimizerProperty -InputObject $values -Name 'EstimatedSize')) `
                 -InstallLocation (ConvertTo-OptimizerInstallLocation -Value (Get-OptimizerProperty -InputObject $values -Name 'InstallLocation'))
         }
+    }
+}
+
+#endregion
+
+#region The inventory verdict
+
+function New-InventoryVerdict {
+    <#
+        ONE RECORD PER OBJECT A DETECTOR MADE A JUDGEMENT ABOUT, and only for
+        the objects it made one about. Added by chunk P6-C3.
+
+        WHY IT EXISTS. The review screen's category tables have four classes;
+        two of them -- held back by a rule, and looked at but not flagged -- are
+        objects that produced no Finding. Findings carried the first two classes
+        across the process boundary and nothing carried the other two, so the
+        counts in the headline sentences ("10 more were held back as protected")
+        could not be turned back into a list without parsing the prose. This is
+        the list.
+
+        TWO CLASSES, AND THE ABSENCE OF A THIRD IS THE POINT. 'Flagged' is
+        "this became a Finding" and 'HeldBack' is "a rule stopped it". An object
+        with NO verdict was looked at and nothing was said about it, which is a
+        third thing and is deliberately not a value here: a consumer that turned
+        silence into either of these would be inventing an engine judgement, the
+        same way it must never re-derive a safety label.
+
+        Id IS THE DETECTOR'S OWN IDENTITY FOR THE OBJECT, and it has to be
+        unique within the inventory that detector published -- a service name, a
+        junk location id, an installed app's Id. Display name is not an identity
+        and never will be: this machine carries two 'Discord' entries and two
+        'Gaming Services'.
+
+        THE REASON IS COPIED, NEVER COMPOSED. Where a curated entry held the
+        object back, the reason is that entry's own worded reason and the
+        entry's id and class sit beside it -- the same discipline the Findings
+        keep. A detector that has no worded reason passes none, and the field is
+        $null rather than a placeholder sentence.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Id,
+        [Parameter(Mandatory)] [ValidateSet('Flagged', 'HeldBack')] [string] $Class,
+
+        # The Finding this object became, for a 'Flagged' verdict. It is not
+        # always the object's own Id -- Find-UnusedApp keys an Appx Finding on
+        # the package family name -- which is exactly why it is recorded here
+        # rather than left for a consumer to guess at.
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $FindingId,
+
+        # The curated entry that held it back, and that entry's class.
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $RuleId,
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $RuleClass,
+
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $Reason
+    )
+
+    # Blank collapses to $null, for the reason New-ScanSource forces a succeeded
+    # source's Reason back to $null: callers distinguish "there was none" from
+    # "it was blank", and '' would read as the second. Written out four times
+    # rather than through a helper, because this is the file whose whole lesson
+    # is that a scriptblock is the thing that does not travel.
+    [pscustomobject][ordered]@{
+        PSTypeName = $script:InventoryVerdictTypeName
+        Id         = $Id
+        Class      = $Class
+        FindingId  = $(if ([string]::IsNullOrWhiteSpace($FindingId)) { $null } else { $FindingId })
+        RuleId     = $(if ([string]::IsNullOrWhiteSpace($RuleId))    { $null } else { $RuleId })
+        RuleClass  = $(if ([string]::IsNullOrWhiteSpace($RuleClass)) { $null } else { $RuleClass })
+        Reason     = $(if ([string]::IsNullOrWhiteSpace($Reason))    { $null } else { $Reason })
     }
 }
 

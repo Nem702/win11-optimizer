@@ -97,7 +97,7 @@ namespace Win11Optimizer.Gui.Core.Tests
             Assert.Equal(0, outcome.ExitCode);
             Assert.Equal(2, outcome.LineCount);
             Assert.Single(seen);
-            Assert.Equal(4, outcome.Result.RowCount);
+            Assert.Equal(5, outcome.Result.RowCount);
         }
 
         [Fact]

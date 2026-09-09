@@ -69,6 +69,24 @@ namespace Win11Optimizer.Gui.Core.Contract
         public const string SafetyLabelSafe = "Safe to remove";
         public const string SafetyLabelReview = "Review needed";
 
+        /// <summary>This inventory object became a Finding. Its row is in Row[], keyed by FindingId.</summary>
+        public const string InventoryFlagged = "Flagged";
+
+        /// <summary>
+        /// A rule held this object back: a protected Windows namespace, or a
+        /// class on the shared exclusion list. It was never offered, whatever
+        /// else is true about it, and RuleId and RuleClass name the curated
+        /// entry that did it.
+        /// </summary>
+        public const string InventoryHeldBack = "HeldBack";
+
+        /// <summary>
+        /// Inspected, no rule held it back, nothing flagged it. THIS IS A CLAIM
+        /// AND NOT A DEFAULT: the engine decides it, and this shell must never
+        /// arrive at it by failing to find one of the other two.
+        /// </summary>
+        public const string InventoryNotFlagged = "NotFlagged";
+
         private static readonly string[] KindList =
             { KindProgress, KindResult, KindError };
 
@@ -95,11 +113,20 @@ namespace Win11Optimizer.Gui.Core.Contract
             SectionJunkFiles, SectionServices
         };
 
+        private static readonly string[] InventoryClassList =
+            { InventoryFlagged, InventoryHeldBack, InventoryNotFlagged };
+
         public static IList<string> Kinds { get { return Copy(KindList); } }
         public static IList<string> Phases { get { return Copy(PhaseList); } }
         public static IList<string> SourceStatuses { get { return Copy(SourceStatusList); } }
         public static IList<string> IncompleteStatuses { get { return Copy(IncompleteStatusList); } }
         public static IList<string> SectionKeys { get { return Copy(SectionKeyList); } }
+        public static IList<string> InventoryClasses { get { return Copy(InventoryClassList); } }
+
+        public static bool IsKnownInventoryClass(string inventoryClass)
+        {
+            return IndexOf(InventoryClassList, inventoryClass) >= 0;
+        }
 
         public static bool IsKnownKind(string kind)
         {

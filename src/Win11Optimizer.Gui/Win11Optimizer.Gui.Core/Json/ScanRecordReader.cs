@@ -203,6 +203,12 @@ namespace Win11Optimizer.Gui.Core.Json
                 rows.Add(ReadRow(row, prefix));
             }
 
+            var inventory = new List<InventoryRecord>();
+            foreach (var entry in JsonBind.ObjectList(map, "Inventory", prefix + "Inventory"))
+            {
+                inventory.Add(ReadInventory(entry, prefix));
+            }
+
             var section = new SectionRecord
             {
                 Key = key,
@@ -216,8 +222,25 @@ namespace Win11Optimizer.Gui.Core.Json
                 RefusedSourceName = JsonBind.StringList(map, "RefusedSourceName", prefix + "RefusedSourceName"),
                 EmptyText = JsonBind.String(map, "EmptyText", prefix + "EmptyText"),
                 RowCount = JsonBind.Int64(map, "RowCount", prefix + "RowCount"),
-                Row = rows
+                Row = rows,
+                InventoryCount = JsonBind.Int64(map, "InventoryCount", prefix + "InventoryCount"),
+                Inventory = inventory
             };
+
+            // The count and the list have to agree. They are produced by the
+            // same projection out of the same array, so a disagreement is not a
+            // number being stale -- it is a line that was truncated or rewritten
+            // between the engine and here, and a table drawn from half an
+            // inventory reports less than the truth while raising nothing.
+            if (section.InventoryCount != inventory.Count)
+            {
+                throw new ScanProtocolException(
+                    "Section '" + (key ?? "?") + "' says it inspected " +
+                    section.InventoryCount.ToString(CultureInfo.InvariantCulture) +
+                    " objects and carries " +
+                    inventory.Count.ToString(CultureInfo.InvariantCulture) +
+                    " of them. The engine writes both from one list, so these cannot disagree.");
+            }
 
             // Cell and ColumnHeader are positionally parallel, and the length
             // is not fixed: the engine splices a FindingId column into every
@@ -239,6 +262,174 @@ namespace Win11Optimizer.Gui.Core.Json
             }
 
             return section;
+        }
+
+        /// <summary>
+        /// One inventory entry. Bound by key presence, exactly like a row's
+        /// category fields and for the same reason: the engine has a table
+        /// saying which category carries which field, and restating it here
+        /// would be a second copy of it.
+        /// </summary>
+        private static InventoryRecord ReadInventory(
+            IDictionary<string, object> map, string sectionPrefix)
+        {
+            string id = JsonBind.String(map, "Id", sectionPrefix + "Inventory.Id");
+            string prefix = sectionPrefix + "Inventory[" + (id ?? "?") + "].";
+
+            string inventoryClass = JsonBind.String(map, "Class", prefix + "Class");
+
+            // Refused, not filed under the nearest known value. A fourth class
+            // arriving without a schema bump means this shell is reading a
+            // stream it does not understand, and the one thing it must not do
+            // with a held-back object is show it as something nothing was said
+            // about -- which is what "treat the unknown as NotFlagged" would do.
+            if (!ScanContract.IsKnownInventoryClass(inventoryClass))
+            {
+                throw new ScanProtocolException(
+                    "The inventory entry '" + (id ?? "?") + "' reported class '" +
+                    (inventoryClass ?? "null") + "', which this shell does not know. " +
+                    "The classes it knows are " +
+                    string.Join(", ", (string[])ScanContract.InventoryClasses) + ".");
+            }
+
+            var record = new InventoryRecord
+            {
+                Id = id,
+                DisplayName = JsonBind.String(map, "DisplayName", prefix + "DisplayName"),
+                Category = JsonBind.String(map, "Category", prefix + "Category"),
+                Class = inventoryClass
+            };
+
+            record.HasReason = JsonBind.Has(map, "Reason");
+            if (record.HasReason)
+            {
+                record.Reason = JsonBind.String(map, "Reason", prefix + "Reason");
+            }
+
+            record.HasFindingId = JsonBind.Has(map, "FindingId");
+            if (record.HasFindingId)
+            {
+                record.FindingId = JsonBind.String(map, "FindingId", prefix + "FindingId");
+            }
+
+            record.HasRuleId = JsonBind.Has(map, "RuleId");
+            if (record.HasRuleId)
+            {
+                record.RuleId = JsonBind.String(map, "RuleId", prefix + "RuleId");
+            }
+
+            record.HasRuleClass = JsonBind.Has(map, "RuleClass");
+            if (record.HasRuleClass)
+            {
+                record.RuleClass = JsonBind.String(map, "RuleClass", prefix + "RuleClass");
+            }
+
+            record.HasMechanism = JsonBind.Has(map, "Mechanism");
+            if (record.HasMechanism)
+            {
+                record.Mechanism = JsonBind.String(map, "Mechanism", prefix + "Mechanism");
+            }
+
+            record.HasScope = JsonBind.Has(map, "Scope");
+            if (record.HasScope)
+            {
+                record.Scope = JsonBind.String(map, "Scope", prefix + "Scope");
+            }
+
+            record.HasEnabledState = JsonBind.Has(map, "EnabledState");
+            if (record.HasEnabledState)
+            {
+                record.EnabledState = JsonBind.String(map, "EnabledState", prefix + "EnabledState");
+            }
+
+            // Tri-state, and never coerced -- null is "could not be determined"
+            // and only false is "proved absent".
+            record.HasTargetExists = JsonBind.Has(map, "TargetExists");
+            if (record.HasTargetExists)
+            {
+                record.TargetExists = JsonBind.NullableBool(map, "TargetExists", prefix + "TargetExists");
+            }
+
+            record.HasPublisher = JsonBind.Has(map, "Publisher");
+            if (record.HasPublisher)
+            {
+                record.Publisher = JsonBind.String(map, "Publisher", prefix + "Publisher");
+            }
+
+            record.HasSource = JsonBind.Has(map, "Source");
+            if (record.HasSource)
+            {
+                record.Source = JsonBind.String(map, "Source", prefix + "Source");
+            }
+
+            record.HasDetail = JsonBind.Has(map, "Detail");
+            if (record.HasDetail)
+            {
+                record.Detail = JsonBind.String(map, "Detail", prefix + "Detail");
+            }
+
+            record.HasState = JsonBind.Has(map, "State");
+            if (record.HasState)
+            {
+                record.State = JsonBind.String(map, "State", prefix + "State");
+            }
+
+            record.HasStatus = JsonBind.Has(map, "Status");
+            if (record.HasStatus)
+            {
+                record.Status = JsonBind.String(map, "Status", prefix + "Status");
+            }
+
+            // The second tri-state. Same rule.
+            record.HasExists = JsonBind.Has(map, "Exists");
+            if (record.HasExists)
+            {
+                record.Exists = JsonBind.NullableBool(map, "Exists", prefix + "Exists");
+            }
+
+            record.HasIsAssessed = JsonBind.Has(map, "IsAssessed");
+            if (record.HasIsAssessed)
+            {
+                record.IsAssessed = JsonBind.NullableBool(map, "IsAssessed", prefix + "IsAssessed");
+            }
+
+            record.HasFileCount = JsonBind.Has(map, "FileCount");
+            if (record.HasFileCount)
+            {
+                record.FileCount = JsonBind.NullableInt64(map, "FileCount", prefix + "FileCount");
+            }
+
+            record.HasTotalBytes = JsonBind.Has(map, "TotalBytes");
+            if (record.HasTotalBytes)
+            {
+                record.TotalBytes = JsonBind.NullableInt64(map, "TotalBytes", prefix + "TotalBytes");
+            }
+
+            record.HasEligibleFileCount = JsonBind.Has(map, "EligibleFileCount");
+            if (record.HasEligibleFileCount)
+            {
+                record.EligibleFileCount = JsonBind.NullableInt64(map, "EligibleFileCount", prefix + "EligibleFileCount");
+            }
+
+            record.HasEligibleBytes = JsonBind.Has(map, "EligibleBytes");
+            if (record.HasEligibleBytes)
+            {
+                record.EligibleBytes = JsonBind.NullableInt64(map, "EligibleBytes", prefix + "EligibleBytes");
+            }
+
+            record.HasIsSizeFloor = JsonBind.Has(map, "IsSizeFloor");
+            if (record.HasIsSizeFloor)
+            {
+                record.IsSizeFloor = JsonBind.NullableBool(map, "IsSizeFloor", prefix + "IsSizeFloor");
+            }
+
+            record.HasMinimumAgeDays = JsonBind.Has(map, "MinimumAgeDays");
+            if (record.HasMinimumAgeDays)
+            {
+                record.MinimumAgeDays = JsonBind.NullableInt64(map, "MinimumAgeDays", prefix + "MinimumAgeDays");
+            }
+
+            return record;
         }
 
         private static RowRecord ReadRow(IDictionary<string, object> map, string sectionPrefix)

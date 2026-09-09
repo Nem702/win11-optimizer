@@ -23,9 +23,12 @@ namespace Win11Optimizer.Gui.Core.Tests
         {
             DecisionsView view = Golden();
 
-            Assert.Equal(4, view.Card.Count);
+            // Five rows across four sections: the Installed apps section holds
+            // two, one from the curated list and one from a usage signal, which
+            // is the shape that section really has.
+            Assert.Equal(5, view.Card.Count);
             Assert.Equal(
-                new[] { "StartupItems", "InstalledApps", "JunkFiles", "Services" },
+                new[] { "StartupItems", "InstalledApps", "InstalledApps", "JunkFiles", "Services" },
                 view.Card.Select(c => c.SectionKey).ToArray());
         }
 
@@ -46,9 +49,17 @@ namespace Win11Optimizer.Gui.Core.Tests
         {
             DecisionsView view = Golden();
 
-            DecisionCard safe = view.Card.Single(c => c.SectionKey == "InstalledApps");
+            // The curated-list row: Confidence 'Known' and no consent required,
+            // which is the only combination the rule calls safe. The unused-app
+            // row beside it is Heuristic, so the same section carries both
+            // labels and this is not a test about one tame row.
+            DecisionCard safe = view.Card.First(c => c.SectionKey == "InstalledApps");
             Assert.Equal(ScanContract.SafetyLabelSafe, safe.SafetyLabel);
             Assert.True(safe.IsSafe);
+
+            DecisionCard heuristic = view.Card.Last(c => c.SectionKey == "InstalledApps");
+            Assert.Equal(ScanContract.SafetyLabelReview, heuristic.SafetyLabel);
+            Assert.False(heuristic.IsSafe);
 
             DecisionCard review = view.Card.Single(c => c.SectionKey == "StartupItems");
             Assert.Equal(ScanContract.SafetyLabelReview, review.SafetyLabel);
@@ -64,7 +75,7 @@ namespace Win11Optimizer.Gui.Core.Tests
             string line = Fixture.GoldenResult().Replace(
                 "\"SafetyLabel\":\"Safe to remove\"", "\"SafetyLabel\":\"Probably fine\"");
 
-            DecisionCard card = View(line).Card.Single(c => c.SectionKey == "InstalledApps");
+            DecisionCard card = View(line).Card.First(c => c.SectionKey == "InstalledApps");
 
             Assert.Equal("Probably fine", card.SafetyLabel);
             Assert.False(card.IsSafe);
@@ -76,7 +87,7 @@ namespace Win11Optimizer.Gui.Core.Tests
             DecisionsView view = Golden();
 
             Assert.Equal("Target file is missing", view.Card.Single(c => c.SectionKey == "StartupItems").LeadLine);
-            Assert.Equal("List entry 'fixture-widget'", view.Card.Single(c => c.SectionKey == "InstalledApps").LeadLine);
+            Assert.Equal("List entry 'fixture-widget'", view.Card.First(c => c.SectionKey == "InstalledApps").LeadLine);
             Assert.Equal("On the curated list", view.Card.Single(c => c.SectionKey == "Services").LeadLine);
         }
 
@@ -144,11 +155,11 @@ namespace Win11Optimizer.Gui.Core.Tests
 
             // The sentence the whole screen is built around, and it is the
             // engine's, not this shell's.
-            Assert.Equal("Could not judge 234 of 286 installed applications.", apps.Lead);
+            Assert.Equal("Could not judge 2 of 5 installed applications.", apps.Lead);
             Assert.Equal(
-                "52 were used recently, 0 look unused, 33 are on the exclusion list and were never considered.",
+                "1 were used recently, 2 look unused, 1 are on the exclusion list and were never considered.",
                 apps.Detail[0]);
-            Assert.Equal(1, apps.DecisionCount);
+            Assert.Equal(2, apps.DecisionCount);
         }
 
         [Fact]

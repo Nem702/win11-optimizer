@@ -377,6 +377,22 @@ function Find-KnownBloatware {
     .PARAMETER KnownBloatwareEntry
         Whitelist entries as returned by Get-KnownBloatwareList.
 
+    .PARAMETER Verdict
+        A list this function records into: one New-InventoryVerdict per INVENTORY
+        RECORD that ended up inside a Finding, keyed by that record's own Id and
+        naming the Finding it went into.
+
+        ONE FINDING CAN COVER SEVERAL INSTALLED RECORDS -- deduplication here is
+        per (whitelist entry, RemovalMethod), so a package present both per-user
+        and provisioned is one Finding over two inventory records. That is the
+        whole reason this cannot be re-derived by a consumer comparing ids: the
+        relationship is many-to-one and the Finding's own Id is the per-user
+        family name, which is not the Id of either record in the general case.
+
+        Optional and additive; every existing call site is unchanged. Nothing is
+        recorded for an app that matched nothing -- absence of a verdict is
+        "looked at, nothing said", which is a third thing and not a value here.
+
     .EXAMPLE
         Find-KnownBloatware -InstalledApp $inventory -KnownBloatwareEntry (Get-KnownBloatwareList)
     #>
@@ -390,7 +406,11 @@ function Find-KnownBloatware {
 
         [Parameter(Mandatory)]
         [ValidateNotNull()]
-        [psobject[]] $KnownBloatwareEntry
+        [psobject[]] $KnownBloatwareEntry,
+
+        [Parameter()]
+        [AllowNull()]
+        [System.Collections.Generic.List[psobject]] $Verdict
     )
 
     $matched = [ordered]@{}
@@ -472,6 +492,11 @@ function Find-KnownBloatware {
                     RequiresConsent = $entryConsent
                     Sources         = (New-Object System.Collections.Generic.List[string])
                     Evidence        = (New-Object System.Collections.Generic.List[string])
+                    # Every inventory record that fed this Finding. Collected as
+                    # the loop runs and turned into verdicts at the end, because
+                    # the Finding's own Id is not settled until then: an Appx
+                    # source rewrites it to the package family name below.
+                    AppId           = (New-Object System.Collections.Generic.List[string])
                 }
                 $record.Evidence.Add("Matches curated known-bloatware entry '$entryId' ($shownName, $entryVendor).")
                 $record.Evidence.Add($entryReason)
@@ -486,6 +511,10 @@ function Find-KnownBloatware {
 
             $record = $matched[$key]
             if (-not $record.Sources.Contains($source)) { $record.Sources.Add($source) }
+            $appId = [string](Get-OptimizerProperty -InputObject $app -Name 'Id')
+            if (-not [string]::IsNullOrWhiteSpace($appId) -and -not $record.AppId.Contains($appId)) {
+                $record.AppId.Add($appId)
+            }
 
             if ($source -eq $script:SourceAppx) {
                 $shown = $familyName
@@ -530,6 +559,17 @@ function Find-KnownBloatware {
         # Added here, not in New-Finding: the join key back to the whitelist is an
         # OemBloatware concept, and the generic contract has no whitelist to join to.
         $finding | Add-Member -MemberType NoteProperty -Name 'WhitelistEntryId' -Value $record.EntryId
+
+        # The Finding's Id is settled now, so the inventory records that fed it
+        # can name it. One verdict per record, not one per Finding: an app found
+        # both per-user and provisioned is two records inside one Finding, and a
+        # table that drew only one of them would leave the other looking like
+        # something nothing was said about.
+        if ($null -ne $Verdict) {
+            foreach ($appId in $record.AppId) {
+                $Verdict.Add((New-InventoryVerdict -Id $appId -Class $script:InventoryVerdictFlagged -FindingId ([string] $record.Id)))
+            }
+        }
 
         $finding
     }
@@ -691,7 +731,13 @@ function Invoke-OemBloatwareScan {
             })
     }
 
-    $findings = @(Find-KnownBloatware -InstalledApp $inventory.ToArray() -KnownBloatwareEntry $whitelist |
+    # What the matcher put inside a Finding, by inventory Id. The review screen's
+    # Installed apps section needs it: its inventory is the unused-app scan's
+    # classifications, and without this an app flagged only by the curated list
+    # would read as "looked at, nothing said" and be drawn twice.
+    $verdicts = New-Object System.Collections.Generic.List[psobject]
+
+    $findings = @(Find-KnownBloatware -InstalledApp $inventory.ToArray() -KnownBloatwareEntry $whitelist -Verdict $verdicts |
         Sort-Object DisplayName, RemovalMethod)
 
     $totalTimer.Stop()
@@ -714,6 +760,20 @@ function Invoke-OemBloatwareScan {
         -AdditionalProperty ([ordered]@{
             WhitelistPath  = $(if ($WhitelistPath) { $WhitelistPath } else { $defaultWhitelistPath })
             WhitelistCount = $whitelist.Count
+            # 'Flagged' only. This detector holds nothing back: its whitelist is
+            # a list of things to flag, not a list of things to spare, so there
+            # is no rule here that could produce a HeldBack verdict.
+            #
+            # AND IT PUBLISHES NO INVENTORY OF ITS OWN, deliberately. Un-elevated
+            # it reads the same two sources as the unused-app scan and the two
+            # inventories are the same 289 records on this machine, so a second
+            # copy would be a second copy. ELEVATED THEY DIVERGE: this scan adds
+            # AppxProvisionedPackage and its InventoryCount becomes a strict
+            # superset, so a provisioned-only Finding will carry a verdict whose
+            # Id matches no classification. That is correct and it is why the
+            # screen treats a missing match as "not in this section's inventory"
+            # rather than as an error.
+            InventoryVerdict = [psobject[]] @($verdicts.ToArray())
         })
 
     Write-OptimizerLog -EventName 'OemScanCompleted' `

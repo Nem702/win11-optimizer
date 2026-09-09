@@ -70,7 +70,7 @@ namespace Win11Optimizer.Gui.Core.Tests
                 selection.Select(card);
             }
 
-            Assert.Equal(4, selection.Count);
+            Assert.Equal(5, selection.Count);
             selection.Clear();
             Assert.Equal(0, selection.Count);
         }

@@ -123,6 +123,55 @@ $script:ReviewReasonText = @{
     'Curated' = 'On the curated list'
 }
 
+# ---- the inventory, added by chunk P6-C3 --------------------------------
+#
+# WHAT EACH SECTION LOOKED AT, not only what it flagged. The console screen
+# does not print this and Format-ReviewSection never reads it; it exists
+# because the JSON contract's consumer draws tables with four classes and two
+# of them -- held back, and looked at but not flagged -- are objects that
+# produced no Finding. Before this the counts for those two lived only inside
+# headline sentences, so the only way to draw them was to parse prose.
+#
+# Same precedent as New-ReviewScanRecord, which P6-C1 added to this file for
+# the same reason and which nothing prints either.
+$script:ReviewInventoryTypeName = 'Win11Optimizer.ReviewInventory'
+
+# THREE CLASSES, AND THE THIRD IS THE ONE THAT COSTS SOMETHING TO SAY.
+# 'Flagged' and 'HeldBack' are the engine's two verdicts, carried out of the
+# detectors on their InventoryVerdict lists. 'NotFlagged' is this file's
+# synthesis and it is a real claim, not a default: it means the object was
+# inspected, no rule held it back, and nothing flagged it. A consumer must
+# never infer one of these from another, the same way it never re-derives a
+# safety label.
+$script:ReviewInventoryFlagged    = 'Flagged'
+$script:ReviewInventoryHeldBack   = 'HeldBack'
+$script:ReviewInventoryNotFlagged = 'NotFlagged'
+
+$script:ReviewInventoryClasses = @(
+    $script:ReviewInventoryFlagged
+    $script:ReviewInventoryHeldBack
+    $script:ReviewInventoryNotFlagged
+)
+
+# The fields an inventory entry carries BEYOND the common four, per category.
+# The same shape and the same rule as the JSON contract's per-category row
+# fields: a field a category does not have is an omitted key, never a null.
+# A field that IS in a category's list is always present and may be null,
+# which is the engine saying it looked and could not say -- TargetExists and
+# Exists are both tri-states and that distinction is load-bearing on them.
+$script:ReviewInventoryCategoryField = [ordered]@{
+    'StartupItem' = @('Mechanism', 'Scope', 'Publisher', 'EnabledState', 'TargetExists')
+    'Service'     = @('Mechanism', 'Scope', 'Publisher', 'EnabledState', 'TargetExists')
+    'UnusedApp'   = @('Source', 'Detail', 'State', 'Publisher')
+    'JunkFile'    = @('Status', 'Exists', 'IsAssessed', 'FileCount', 'TotalBytes',
+                      'EligibleFileCount', 'EligibleBytes', 'IsSizeFloor', 'MinimumAgeDays')
+}
+
+# Worded here, beside the headline sentences that count the same objects,
+# because wording is what this file owns. The exclusion list's own entries
+# carry their own reason and it is copied rather than replaced.
+$script:ReviewProtectedTaskReason = 'In a protected Windows namespace. Scheduled tasks there are never considered, whatever else is true about them.'
+
 #endregion
 
 #region Internal: text helpers
@@ -630,6 +679,387 @@ function New-ReviewRow {
     }
 }
 
+function New-ReviewInventoryEntry {
+    <#
+        One object a section inspected, whatever came of it. Chunk P6-C3.
+
+        THE COMMON FOUR ARE ALWAYS PRESENT and everything else is added only
+        where it applies, which is the same rule the JSON contract keeps for a
+        row's category fields: a field a category does not have is an omitted
+        key, not a null. A null would be a placeholder for something that does
+        not exist, and the one thing this contract may not carry is a
+        placeholder.
+
+        Id IS THE DETECTOR'S OWN IDENTITY and is not guaranteed unique on its
+        own -- measured, not assumed: 39 installed-app records on this machine, in
+        17 groups, share an Id with another. They are Appx framework packages
+        present in more than one architecture under one package family name, and
+        the category fields carry what separates them: Detail is the package
+        full name. A screen keying rows on Id alone would collapse them; one
+        keying on Id plus Detail will not.
+
+        Reads go through Get-OptimizerProperty so a fabricated or deserialized
+        source object cannot throw under strict mode.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Id,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $DisplayName,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Category,
+        [Parameter(Mandatory)] [ValidateSet('Flagged', 'HeldBack', 'NotFlagged')] [string] $Class,
+
+        # The object the category fields are copied off.
+        [Parameter(Mandatory)] [AllowNull()] $Source,
+
+        # The detector's verdict for this object, where there was one.
+        [Parameter()] [AllowNull()] $Verdict,
+
+        # A reason this file worded itself, for a rule that has no curated entry
+        # behind it. Overridden by the verdict's own reason where there is one,
+        # because a curated entry's wording beats a general sentence.
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $Reason
+    )
+
+    $entry = [ordered]@{
+        PSTypeName  = $script:ReviewInventoryTypeName
+        Id          = $Id
+        DisplayName = $(if ([string]::IsNullOrWhiteSpace($DisplayName)) { $Id } else { $DisplayName })
+        Category    = $Category
+        Class       = $Class
+    }
+
+    $verdictReason = [string](Get-OptimizerProperty -InputObject $Verdict -Name 'Reason')
+    if (-not [string]::IsNullOrWhiteSpace($verdictReason)) { $Reason = $verdictReason }
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) { $entry['Reason'] = $Reason }
+
+    # The join back to Row[]. Present only on a flagged entry, and carried
+    # rather than guessed at: Find-UnusedApp keys an Appx Finding on the package
+    # family name, so an entry and its Finding do not always share an Id.
+    $findingId = [string](Get-OptimizerProperty -InputObject $Verdict -Name 'FindingId')
+    if (-not [string]::IsNullOrWhiteSpace($findingId)) { $entry['FindingId'] = $findingId }
+
+    # Which curated entry held it back, and that entry's class. Structured, so a
+    # consumer reads 'security' rather than string-matching the reason prose.
+    $ruleId = [string](Get-OptimizerProperty -InputObject $Verdict -Name 'RuleId')
+    if (-not [string]::IsNullOrWhiteSpace($ruleId)) { $entry['RuleId'] = $ruleId }
+
+    $ruleClass = [string](Get-OptimizerProperty -InputObject $Verdict -Name 'RuleClass')
+    if (-not [string]::IsNullOrWhiteSpace($ruleClass)) { $entry['RuleClass'] = $ruleClass }
+
+    if ($script:ReviewInventoryCategoryField.Contains($Category)) {
+        foreach ($name in @($script:ReviewInventoryCategoryField[$Category])) {
+            # Present even when null. These are the category's own fields and a
+            # null on one of them is an answer: TargetExists and Exists are
+            # tri-states whose $null means "could not be determined", which is
+            # not the same claim as $false and must not collapse into it.
+            $entry[$name] = Get-OptimizerProperty -InputObject $Source -Name $name
+        }
+    }
+
+    [pscustomobject] $entry
+}
+
+function Get-ReviewVerdictMap {
+    <#
+        A scan result's InventoryVerdict list as an Id -> verdict lookup.
+
+        FIRST ONE WINS, and a duplicate Id is harmless here rather than merely
+        tolerated: every rule that produces a verdict matches on the fields the
+        duplicates share -- an Appx package's name, family name, display name or
+        publisher -- so two records with one Id are always held back or flagged
+        together. A lookup by Id therefore gives both of them the same answer,
+        which is the true one.
+
+        Ordinal comparison. A service name and a package family name are machine
+        identifiers, and a culture-aware compare on one of those is a bug waiting
+        for a different locale.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Scan
+    )
+
+    $map = New-Object 'System.Collections.Generic.Dictionary[string,psobject]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($verdict in @(Get-OptimizerProperty -InputObject $Scan -Name 'InventoryVerdict' -Default @())) {
+        if ($null -eq $verdict) { continue }
+        $id = [string](Get-OptimizerProperty -InputObject $verdict -Name 'Id')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+        if ($map.ContainsKey($id)) { continue }
+        $map[$id] = $verdict
+    }
+
+    , $map
+}
+
+function Get-ReviewFindingIdMap {
+    <#
+        The Findings of one category as an Id -> Finding lookup, for the
+        categories whose Finding Id IS the inventory object's Id: a startup
+        entry, a service and a junk location all key that way, and each of the
+        three is one line in its detector -- New-Finding -Id $identifier, where
+        $identifier came straight off the record.
+
+        NOT USED FOR INSTALLED APPLICATIONS. Find-UnusedApp rewrites an Appx
+        Finding's Id to the package family name and Find-KnownBloatware groups
+        several inventory records into one Finding, so that join is many-to-one
+        and is carried on the detectors' verdict lists instead of re-derived
+        here.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Scan,
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string] $Category
+    )
+
+    $map = New-Object 'System.Collections.Generic.Dictionary[string,psobject]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($finding in @(Get-ReviewFinding -Scan $Scan -Category $Category)) {
+        if ($null -eq $finding) { continue }
+        $id = [string](Get-OptimizerProperty -InputObject $finding -Name 'Id')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+        if ($map.ContainsKey($id)) { continue }
+        $map[$id] = $finding
+    }
+
+    , $map
+}
+
+function New-ReviewStartupInventory {
+    <#
+        The startup scan's items as inventory entries, optionally narrowed to
+        one mechanism.
+
+        THE SERVICES SECTION AND THE STARTUP SECTION SHARE THIS, because they
+        share a scan: the startup section's headline counts all 150 entries, the
+        services among them, and the services section counts the 92 that are
+        services. Two builders over one object list is two places for the class
+        rule to drift, so there is one.
+
+        THE CLASS RULE, IN ORDER:
+          Flagged    the item became a Finding. Joined on Mechanism and Id,
+                     which is what Find-UnwantedStartupItem keys a Finding on.
+          HeldBack   a scheduled task in a protected namespace, read off the
+                     item's own IsProtectedNamespace; or a service on the
+                     detector's InventoryVerdict list, which is the single
+                     evaluation of the shared exclusion list's protected classes.
+          NotFlagged everything else: inspected, no rule fired, nothing flagged.
+
+        Flagged is tested first and the order is load-bearing. If an object were
+        ever both, the counts asserted against ProtectedServiceCount and
+        ProtectedTaskCount would come out short and the suite would say so --
+        which is the right outcome, because a service that was flagged was not
+        held back by anything and the headline beside it would be wrong.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject[]])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Scan,
+        [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $Mechanism
+    )
+
+    $verdicts = Get-ReviewVerdictMap -Scan $Scan
+    $flagged  = New-Object 'System.Collections.Generic.Dictionary[string,psobject]' -ArgumentList ([System.StringComparer]::OrdinalIgnoreCase)
+
+    # Keyed on mechanism AND id: a Run value and a service could in principle
+    # carry the same name, and a join that collapsed them would flag the wrong
+    # one of the two.
+    foreach ($finding in @(Get-ReviewFinding -Scan $Scan)) {
+        if ($null -eq $finding) { continue }
+        $key = '{0}|{1}' -f [string](Get-OptimizerProperty -InputObject $finding -Name 'Mechanism'),
+                            [string](Get-OptimizerProperty -InputObject $finding -Name 'Id')
+        if (-not $flagged.ContainsKey($key)) { $flagged[$key] = $finding }
+    }
+
+    $entries = New-Object System.Collections.Generic.List[psobject]
+
+    foreach ($item in @(Get-OptimizerProperty -InputObject $Scan -Name 'StartupItems' -Default @())) {
+        if ($null -eq $item) { continue }
+
+        $itemMechanism = [string](Get-OptimizerProperty -InputObject $item -Name 'Mechanism')
+        if (-not [string]::IsNullOrWhiteSpace($Mechanism) -and $itemMechanism -ne $Mechanism) { continue }
+
+        $id = [string](Get-OptimizerProperty -InputObject $item -Name 'Id')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+
+        $category = [string](Get-OptimizerProperty -InputObject $item -Name 'Category')
+        if ([string]::IsNullOrWhiteSpace($category)) { continue }
+
+        $class   = $script:ReviewInventoryNotFlagged
+        $verdict = $null
+        $reason  = $null
+
+        $key = '{0}|{1}' -f $itemMechanism, $id
+        if ($flagged.ContainsKey($key)) {
+            $class = $script:ReviewInventoryFlagged
+            # The Finding's own Id, which for a startup entry IS this item's --
+            # carried anyway, so that every flagged entry in this payload names
+            # its row the same way whatever the category.
+            $verdict = [pscustomobject]@{ FindingId = [string](Get-OptimizerProperty -InputObject $flagged[$key] -Name 'Id') }
+        }
+        elseif ([bool](Get-OptimizerProperty -InputObject $item -Name 'IsProtectedNamespace' -Default $false)) {
+            $class  = $script:ReviewInventoryHeldBack
+            $reason = $script:ReviewProtectedTaskReason
+        }
+        elseif ($itemMechanism -eq $script:StartupMechanismService -and $verdicts.ContainsKey($id)) {
+            $class   = $script:ReviewInventoryHeldBack
+            $verdict = $verdicts[$id]
+        }
+
+        $entries.Add((New-ReviewInventoryEntry -Id $id `
+            -DisplayName ([string](Get-OptimizerProperty -InputObject $item -Name 'DisplayName' -Default $id)) `
+            -Category $category -Class $class -Source $item -Verdict $verdict -Reason $reason))
+    }
+
+    [psobject[]] @($entries.ToArray())
+}
+
+function New-ReviewInstalledAppInventory {
+    <#
+        The unused-app scan's classifications as inventory entries.
+
+        THE INVENTORY IS THE UNUSED-APP SCAN'S AND NOT THE OEM SCAN'S, and that
+        is a decision with a measured reason. Un-elevated the two read the same
+        two sources and produce the same 289 records on this machine, so a second
+        copy would be a second copy. ELEVATED THEY DIVERGE: Invoke-OemBloatwareScan
+        also reads AppxProvisionedPackage, so its InventoryCount becomes a strict
+        superset and an OEM verdict may name an app that is not in this list at
+        all. That is why the OEM verdicts are LOOKED UP rather than iterated -- a
+        verdict with no classification behind it is a provisioned-only package,
+        and it belongs to no row here.
+
+        Every headline number this section prints comes off the unused-app scan
+        (ConsideredCount, UnknownCount, UsedCount, UnusedCount, ExcludedCount),
+        so this is the list those sentences are about.
+
+        THE CLASS RULE:
+          Flagged    a verdict from either scan says so. Both are consulted,
+                     because a curated-list match and a usage-signal match are
+                     two different ways into the same table.
+          HeldBack   the unused-app scan's exclusion gate held it back. Its
+                     verdict carries the curated entry's own worded reason.
+          NotFlagged used recently, or could not be judged. The classification's
+                     own Reason says which, in the classifier's words.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject[]])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $UnusedScan,
+        [Parameter(Mandatory)] [AllowNull()] $OemScan
+    )
+
+    $unusedVerdicts = Get-ReviewVerdictMap -Scan $UnusedScan
+    $oemVerdicts    = Get-ReviewVerdictMap -Scan $OemScan
+
+    $entries = New-Object System.Collections.Generic.List[psobject]
+
+    foreach ($record in @(Get-OptimizerProperty -InputObject $UnusedScan -Name 'Classifications' -Default @())) {
+        if ($null -eq $record) { continue }
+
+        $app = Get-OptimizerProperty -InputObject $record -Name 'App'
+        $id  = [string](Get-OptimizerProperty -InputObject $app -Name 'Id')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+
+        # The classifier's own sentence -- "Launched 4 days ago, inside the
+        # 180-day window." Already written, and copied rather than replaced by
+        # one composed here from the scalars beside it.
+        $reason = [string](Get-OptimizerProperty -InputObject $record -Name 'Reason')
+
+        $class   = $script:ReviewInventoryNotFlagged
+        $verdict = $null
+
+        if ($unusedVerdicts.ContainsKey($id)) {
+            $verdict = $unusedVerdicts[$id]
+            $class = $(if ([string](Get-OptimizerProperty -InputObject $verdict -Name 'Class') -eq $script:ReviewInventoryHeldBack) {
+                $script:ReviewInventoryHeldBack
+            } else { $script:ReviewInventoryFlagged })
+        }
+        elseif ($oemVerdicts.ContainsKey($id)) {
+            # A curated-list match. This scan said nothing about it, and its own
+            # Reason -- "no usage signal names this application" -- would be
+            # beside the point next to a row that exists for another reason
+            # entirely, so it is left off.
+            $class   = $script:ReviewInventoryFlagged
+            $verdict = $oemVerdicts[$id]
+            $reason  = $null
+        }
+
+        # State is the classification's, not the app's, so the category fields
+        # are read off a record that carries both halves.
+        $source = [pscustomobject]@{
+            Source    = [string](Get-OptimizerProperty -InputObject $app -Name 'Source')
+            Detail    = Get-OptimizerProperty -InputObject $app -Name 'Detail'
+            State     = [string](Get-OptimizerProperty -InputObject $record -Name 'State')
+            Publisher = Get-OptimizerProperty -InputObject $app -Name 'Publisher'
+        }
+
+        $entries.Add((New-ReviewInventoryEntry -Id $id `
+            -DisplayName ([string](Get-OptimizerProperty -InputObject $record -Name 'DisplayName' -Default $id)) `
+            -Category 'UnusedApp' -Class $class -Source $source -Verdict $verdict -Reason $reason))
+    }
+
+    [psobject[]] @($entries.ToArray())
+}
+
+function New-ReviewJunkInventory {
+    <#
+        The junk scan's curated locations as inventory entries. Fifteen of them
+        on this machine, and every one is reported -- including the ones that
+        produced no Finding and the ones that could not be read, which is
+        New-JunkLocation's own rule: "Recycle Bin: 2.3 MiB, not flagged" is
+        inventory the user wants, and "Recycle Bin" silently absent is the
+        failure this project is built against.
+
+        THE CLASS RULE mirrors Find-JunkFileLocation's gate in the order that
+        function applies it, and READS IT OFF THE RECORD rather than re-running
+        it. A location marked InventoryOnly is one the curated list says to
+        measure and never offer, and it carries its own InventoryOnlyReason. A
+        location that was not assessed, or that held nothing eligible, was
+        inspected and produced nothing -- which is NotFlagged and not HeldBack:
+        no rule spared it, there was simply nothing to offer.
+    #>
+    [CmdletBinding()]
+    [OutputType([psobject[]])]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Scan
+    )
+
+    $flagged = Get-ReviewFindingIdMap -Scan $Scan -Category 'JunkFile'
+    $entries = New-Object System.Collections.Generic.List[psobject]
+
+    foreach ($location in @(Get-OptimizerProperty -InputObject $Scan -Name 'Locations' -Default @())) {
+        if ($null -eq $location) { continue }
+
+        $id = [string](Get-OptimizerProperty -InputObject $location -Name 'Id')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+
+        $class   = $script:ReviewInventoryNotFlagged
+        $verdict = $null
+        $reason  = $null
+
+        if ($flagged.ContainsKey($id)) {
+            $class   = $script:ReviewInventoryFlagged
+            $verdict = [pscustomobject]@{ FindingId = [string](Get-OptimizerProperty -InputObject $flagged[$id] -Name 'Id') }
+        }
+        elseif ([bool](Get-OptimizerProperty -InputObject $location -Name 'InventoryOnly' -Default $false)) {
+            $class  = $script:ReviewInventoryHeldBack
+            $reason = [string](Get-OptimizerProperty -InputObject $location -Name 'InventoryOnlyReason')
+        }
+        else {
+            # Why nothing came of it, in the record's own words where it has
+            # any: a location that could not be read says so on StatusReason,
+            # and one that was read and held nothing eligible says nothing at
+            # all rather than acquiring a sentence written here.
+            $reason = [string](Get-OptimizerProperty -InputObject $location -Name 'StatusReason')
+        }
+
+        $entries.Add((New-ReviewInventoryEntry -Id $id `
+            -DisplayName ([string](Get-OptimizerProperty -InputObject $location -Name 'DisplayName' -Default $id)) `
+            -Category 'JunkFile' -Class $class -Source $location -Verdict $verdict -Reason $reason))
+    }
+
+    [psobject[]] @($entries.ToArray())
+}
+
 function New-ReviewSection {
     # Every field on every section, whatever the category -- Set-StrictMode
     # -Version Latest is on for everything that reads this.
@@ -643,6 +1073,9 @@ function New-ReviewSection {
         [Parameter()] [AllowEmptyCollection()] [string[]] $ColumnHeader = @(),
         [Parameter()] [AllowEmptyCollection()] [AllowNull()] [int[]] $ColumnMinimumWidth = @(),
         [Parameter()] [AllowEmptyCollection()] [AllowNull()] [psobject[]] $Row = @(),
+        # WHAT THE SECTION LOOKED AT, from New-Review*Inventory. Nothing prints
+        # it -- see the note on the property below.
+        [Parameter()] [AllowEmptyCollection()] [AllowNull()] [psobject[]] $Inventory = @(),
         [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $TotalLine,
         [Parameter()] [bool] $IsComplete = $true,
         [Parameter()] [AllowNull()] [AllowEmptyString()] [string] $IncompleteReason,
@@ -661,6 +1094,16 @@ function New-ReviewSection {
         # columns may all be squeezed to the shared minimum.
         ColumnMinimumWidth = [int[]] @($ColumnMinimumWidth)
         Row               = [psobject[]] @($Row)
+        # ADDED BY P6-C3, AND NOTHING PRINTS IT -- the same arrangement, for the
+        # same reason, as the Scan records P6-C1 added: Format-ReviewSection and
+        # Format-ReviewScreen do not read this, so the console screen is byte for
+        # byte what P4-C1 shipped and a test asserts that.
+        #
+        # It is decided HERE rather than in the JSON projection because deciding
+        # is what this file does. Working out which objects a rule held back is a
+        # judgement, and Review\Json.ps1's whole contract with itself is that it
+        # decides nothing the screen has not decided already.
+        Inventory         = [psobject[]] @($Inventory)
         # Only ever non-null where Row is non-empty. See Get-ReviewJunkSection:
         # the rule that a category total may not be printed without the per-row
         # split is enforced by never producing one without rows, not by a
@@ -810,6 +1253,12 @@ function Get-ReviewStartupSection {
 
     $startupFindings = @(Get-ReviewFinding -Scan $Scan -Category 'StartupItem')
 
+    # EVERY entry the scan inventoried, services included, because the headline
+    # above counts them all: "150 things start with your PC" is 15 Run keys, 43
+    # scheduled tasks and 92 services, and a list that left the services out
+    # would not be the list that sentence is about.
+    $inventoryEntry = New-ReviewStartupInventory -Scan $Scan
+
     $note = New-Object System.Collections.Generic.List[string]
     if ($protTask -gt 0) {
         $null = $note.Add(("{0} scheduled tasks in protected Windows namespaces were never considered." -f (Format-JunkCount -Count $protTask)))
@@ -851,7 +1300,7 @@ function Get-ReviewStartupSection {
         -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
             -Value ([string[]] @('#', 'What', 'Starts via', 'Why flagged', 'Safety'))) `
         -ColumnMinimumWidth $idColumn.MinimumWidth `
-        -Row ([psobject[]] @($rows.ToArray())) `
+        -Row ([psobject[]] @($rows.ToArray())) -Inventory $inventoryEntry `
         -IsComplete $facts.IsComplete -IncompleteReason $facts.IncompleteReason `
         -RefusedSourceName $facts.RefusedSourceName `
         -EmptyText 'Nothing that starts with this PC is flagged. The inventory above is the answer, not an empty list.'
@@ -909,6 +1358,11 @@ function Get-ReviewInstalledAppSection {
     $installedFindings = @(@(@(Get-ReviewFinding -Scan $OemScan -Category 'OemBloatware') +
         @(Get-ReviewFinding -Scan $UnusedScan -Category 'UnusedApp')) | Where-Object { $null -ne $_ })
 
+    # The classifications, which is the list the headline above is counting.
+    # Both scans' verdicts are consulted; only one scan's inventory is used, and
+    # New-ReviewInstalledAppInventory says why at length.
+    $inventoryEntry = New-ReviewInstalledAppInventory -UnusedScan $UnusedScan -OemScan $OemScan
+
     # THIS IS THE SECTION THAT MADE THE COLUMN NECESSARY. Two rows read
     # 'Microsoft Copilot' on this machine, with the same reason beside them: the
     # Appx package and the Win32 install, which need two different removal calls.
@@ -946,7 +1400,7 @@ function Get-ReviewInstalledAppSection {
         -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
             -Value ([string[]] @('#', 'Application', 'Found by', 'Why flagged', 'Safety'))) `
         -ColumnMinimumWidth $idColumn.MinimumWidth `
-        -Row ([psobject[]] @($rows.ToArray())) `
+        -Row ([psobject[]] @($rows.ToArray())) -Inventory $inventoryEntry `
         -IsComplete ($unusedFacts.IsComplete -and $oemFacts.IsComplete) `
         -IncompleteReason ($reasons -join ' ') `
         -RefusedSourceName ([string[]] @(@($unusedFacts.RefusedSourceName) + @($oemFacts.RefusedSourceName) | Sort-Object -Unique)) `
@@ -985,6 +1439,12 @@ function Get-ReviewJunkSection {
     $isFloor   = [bool](Get-OptimizerProperty -InputObject $Scan -Name 'SizeIsFloor' -Default $false)
 
     $findings = @(Get-ReviewFinding -Scan $Scan -Category 'JunkFile')
+
+    # All fifteen curated locations, not the six that produced a Finding. The
+    # headline above says "15 locations were measured; 6 of them hold something
+    # this tool would offer to delete", and the other nine are the answer to the
+    # question a person actually asked.
+    $inventoryEntry = New-ReviewJunkInventory -Scan $Scan
 
     # Q14's shape, in miniature: one Finding per browser means two profiles of
     # the same browser would arrive as two rows with one name.
@@ -1070,7 +1530,7 @@ function Get-ReviewJunkSection {
         -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
             -Value ([string[]] @('#', 'Location', 'On disk now', 'Files', 'Older than', 'Safety'))) `
         -ColumnMinimumWidth $idColumn.MinimumWidth `
-        -Row ([psobject[]] @($rows.ToArray())) -TotalLine $totalLine `
+        -Row ([psobject[]] @($rows.ToArray())) -Inventory $inventoryEntry -TotalLine $totalLine `
         -IsComplete $facts.IsComplete -IncompleteReason $facts.IncompleteReason `
         -RefusedSourceName $facts.RefusedSourceName `
         -EmptyText 'No location holds anything this tool would offer to delete.'
@@ -1109,6 +1569,12 @@ function Get-ReviewServiceSection {
     $items = @(Get-OptimizerProperty -InputObject $Scan -Name 'StartupItems' -Default @())
 
     $findings = @(Get-ReviewFinding -Scan $Scan -Category 'Service')
+
+    # The 92 services out of the startup scan's 150 entries, which is exactly the
+    # number the headline below quotes. The ten the exclusion list held back are
+    # HeldBack here and carry the curated entry's own reason, so the sentence
+    # "10 more were held back as protected" is now a list rather than a number.
+    $inventoryEntry = New-ReviewStartupInventory -Scan $Scan -Mechanism $script:StartupMechanismService
 
     $headline = New-Object System.Collections.Generic.List[string]
     $null = $headline.Add(("{0} Windows services were looked at; {1} {2} flagged below." -f `
@@ -1162,7 +1628,7 @@ function Get-ReviewServiceSection {
         -ColumnHeader (Add-ReviewCell -Show $idColumn.Show -Index $idColumn.Index -Insert $idColumn.Header `
             -Value ([string[]] @('#', 'Service', 'State', 'Why flagged', 'Safety'))) `
         -ColumnMinimumWidth $idColumn.MinimumWidth `
-        -Row ([psobject[]] @($rows.ToArray())) `
+        -Row ([psobject[]] @($rows.ToArray())) -Inventory $inventoryEntry `
         -IsComplete $facts.IsComplete -IncompleteReason $facts.IncompleteReason `
         -RefusedSourceName $facts.RefusedSourceName `
         -EmptyText 'No service is flagged.'

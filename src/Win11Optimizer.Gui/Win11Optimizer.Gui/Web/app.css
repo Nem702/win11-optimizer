@@ -167,6 +167,9 @@ p.sub{margin:0 0 1.15rem;color:var(--soft);font-size:.87rem;max-width:74ch;}
 }
 .scan .ph.done{color:var(--ink);}
 .scan .ph.now{color:var(--accent);}
+/* Q30: a phase that has not started has no name yet. It is a dash, dimmed
+   further than the rest, rather than the contract's machine key. */
+.scan .ph.pending{color:var(--edge);}
 .scan .ph .t{margin-left:auto;font-family:var(--mono);font-size:.74rem;}
 .bar{height:5px;border-radius:3px;background:var(--edge);overflow:hidden;margin:1.2rem 0 .5rem;}
 .bar span{display:block;height:100%;background:var(--accent);transition:width .3s ease;}

@@ -85,10 +85,26 @@
       "one names the location it is on - a run that has stopped should never look like a run " +
       "that is working."));
 
+    // Q30. A PHASE THAT HAS NOT STARTED SHOWS NO NAME AT ALL.
+    //
+    // The engine writes a human sentence for a phase in that phase's own first
+    // progress line, so until then the only thing the shell holds is the
+    // contract's machine key -- 'StartupItems', 'InstalledApps'. Those five keys
+    // used to be painted on the first frame. A machine identifier reaching a
+    // person is the bug; the fix is not to invent a second copy of the engine's
+    // sentences in this file, which is what a phase-label table here would be
+    // and what report 9.1 argued against. So a pending row is a dash, and the
+    // engine's own words replace it the moment its progress line arrives.
+    //
+    // State is the authority, not a comparison of Label against Key: a pending
+    // phase is exactly the one that has published no sentence yet, and once a
+    // phase is running or done its label is the engine's.
     (d.phase || []).forEach(function (p) {
       var phaseState = p.State === 2 ? "done" : (p.State === 1 ? "now" : "");
-      var row = el("div", "ph" + (phaseState ? " " + phaseState : ""));
-      row.appendChild(el("span", null, p.Label));
+      var row = el("div", "ph" + (phaseState ? " " + phaseState : " pending"));
+      // A plain hyphen, not an em dash: every file in this project is ASCII and
+      // one character above 0x7E in a source file is not a small problem here.
+      row.appendChild(el("span", null, phaseState ? p.Label : "-"));
       row.appendChild(el("span", "t", phaseState === "done" ? "done" : ""));
       box.appendChild(row);
     });

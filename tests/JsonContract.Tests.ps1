@@ -856,6 +856,202 @@ Describe 'P6-C1 the runner writes protocol lines and nothing else' {
     It 'carries no shell-specific date literal in a real run either' {
         $script:Run.Out[-1] | Should -Not -Match '/Date\('
     }
+
+    It 'carries an inventory whose length is the scan''s own InventoryCount, per section' {
+        # P6-C3, AND THIS IS THE ONE THAT HAD TO RUN AGAINST THE REAL MACHINE.
+        # The fixture can be made to agree with itself; only a real scan can say
+        # that the projection and four live detectors agree. Nothing here reads
+        # a headline sentence.
+        $result = ConvertFrom-Json -InputObject $script:Run.Out[-1]
+
+        $scanByDetector = @{}
+        foreach ($scan in $result.Scan) { $scanByDetector[$scan.Detector] = $scan }
+
+        $sectionByKey = @{}
+        foreach ($section in $result.Section) { $sectionByKey[$section.Key] = $section }
+
+        # Three of the four sections have a scan whose InventoryCount is exactly
+        # the number of objects the section inspected. The services section is
+        # the fourth: it is a subset of the startup scan's inventory -- the
+        # entries whose Mechanism is Service -- so it is checked against that
+        # subset rather than against a count that was never about it.
+        $sectionByKey['StartupItems'].InventoryCount |
+            Should -Be $scanByDetector['StartupItems'].InventoryCount
+        $sectionByKey['InstalledApps'].InventoryCount |
+            Should -Be $scanByDetector['UnusedApps'].InventoryCount
+        $sectionByKey['JunkFiles'].InventoryCount |
+            Should -Be $scanByDetector['JunkFiles'].InventoryCount
+
+        $startupServices = @($sectionByKey['StartupItems'].Inventory | Where-Object { $_.Mechanism -eq 'Service' })
+        $sectionByKey['Services'].InventoryCount | Should -Be @($startupServices).Count
+    }
+
+    It 'classifies every inventoried object exactly once, on a real machine' {
+        $result = ConvertFrom-Json -InputObject $script:Run.Out[-1]
+
+        foreach ($section in $result.Section) {
+            $classified = 0
+            foreach ($class in @($script:Contract.InventoryClasses)) {
+                $classified += @($section.Inventory | Where-Object { $_.Class -eq $class }).Count
+            }
+            $classified | Should -Be $section.InventoryCount -Because "section '$($section.Key)' must classify every entry once"
+        }
+    }
+
+    It 'gives every flagged object a row, and every row an object, on a real machine' {
+        # The join a category table depends on. A flagged entry with no row
+        # would be a finding that is not there; a row with no entry would be an
+        # object the inventory forgot.
+        #
+        # ACROSS THE WHOLE PAYLOAD, not per section, and that is not a weaker
+        # claim -- it is the right one. A flagged service appears in the startup
+        # section's inventory, because the startup headline counts the services
+        # among the things that start with this PC, while its row is in the
+        # services section. The class is a judgement about the OBJECT; which
+        # table draws the row is the screen's business.
+        $result = ConvertFrom-Json -InputObject $script:Run.Out[-1]
+
+        $rowIds     = @($result.Section | ForEach-Object { $_.Row } | Where-Object { $null -ne $_ } | ForEach-Object { $_.FindingId })
+        $flaggedIds = @($result.Section | ForEach-Object { $_.Inventory } | Where-Object { $null -ne $_ -and $_.Class -eq 'Flagged' } | ForEach-Object { $_.FindingId })
+
+        @($flaggedIds).Count | Should -BeGreaterThan 0 -Because 'this machine really does flag something'
+
+        foreach ($id in $flaggedIds) {
+            $id     | Should -Not -BeNullOrEmpty
+            $rowIds | Should -Contain $id -Because "'$id' is flagged in an inventory and has no row anywhere"
+        }
+        foreach ($id in $rowIds) {
+            $flaggedIds | Should -Contain $id -Because "'$id' has a row and is in no section's inventory"
+        }
+    }
+}
+
+Describe 'P6-C3 the inventory agrees with the live scans that produced it' {
+
+    # THE ACCEPTANCE CRITERION, AGAINST THIS MACHINE RATHER THAN A FIXTURE. A
+    # fixture can be made to agree with itself; only a real scan says that the
+    # screen's inventory and four live detectors agree about how many objects
+    # were looked at and how many were held back.
+    #
+    # ONE SET OF SCANS, and both sides of every assertion come out of it. Two
+    # scans a few seconds apart can legitimately disagree -- a service can be
+    # installed between them -- and a test that compared one scan's count with
+    # another scan's list would be flaky for a reason that is not a defect.
+    #
+    # NOTHING HERE PARSES A HEADLINE SENTENCE. That is the whole point: until
+    # this chunk, ProtectedTaskCount and ProtectedServiceCount reached a
+    # consumer only inside prose.
+
+    BeforeAll {
+        $script:LiveScreen = InModuleScope Win11Optimizer.Engine {
+            $startup = Invoke-StartupItemScan   -WarningAction SilentlyContinue
+            $unused  = Invoke-UnusedAppScan     -WarningAction SilentlyContinue
+            $oem     = Invoke-OemBloatwareScan  -WarningAction SilentlyContinue
+            $junk    = Invoke-JunkFileScan      -WarningAction SilentlyContinue
+
+            [pscustomobject]@{
+                Screen  = Get-ReviewScreen -StartupScan $startup -UnusedAppScan $unused -OemScan $oem -JunkScan $junk -SkipReceipt
+                Startup = $startup
+                Unused  = $unused
+                Oem     = $oem
+                Junk    = $junk
+            }
+        }
+
+        $script:LiveSection = @{}
+        foreach ($section in $script:LiveScreen.Screen.Section) { $script:LiveSection[$section.Key] = $section }
+    }
+
+    It 'gives the startup section one entry per object the startup scan inventoried' {
+        @($script:LiveSection['StartupItems'].Inventory).Count |
+            Should -Be $script:LiveScreen.Startup.InventoryCount
+    }
+
+    It 'gives the installed-apps section one entry per classification the unused-app scan made' {
+        # The unused-app scan's inventory, NOT the OEM scan's. Un-elevated the
+        # two read the same two sources and match; elevated the OEM scan also
+        # reads provisioned packages and its InventoryCount becomes a strict
+        # superset, so asserting against it would fail on the first elevated run
+        # for a reason that is not a defect.
+        @($script:LiveSection['InstalledApps'].Inventory).Count |
+            Should -Be $script:LiveScreen.Unused.InventoryCount
+        @($script:LiveSection['InstalledApps'].Inventory).Count |
+            Should -Be $script:LiveScreen.Unused.ConsideredCount
+    }
+
+    It 'gives the junk section one entry per curated location, flagged or not' {
+        @($script:LiveSection['JunkFiles'].Inventory).Count |
+            Should -Be $script:LiveScreen.Junk.InventoryCount
+        @($script:LiveSection['JunkFiles'].Inventory).Count |
+            Should -BeGreaterThan @($script:LiveSection['JunkFiles'].Row).Count
+    }
+
+    It 'gives the services section one entry per service the startup scan inventoried' {
+        @($script:LiveSection['Services'].Inventory).Count |
+            Should -Be ([int] $script:LiveScreen.Startup.MechanismCount['Service'])
+    }
+
+    It 'holds back exactly ProtectedTaskCount scheduled tasks' {
+        @($script:LiveSection['StartupItems'].Inventory |
+            Where-Object { $_.Class -eq 'HeldBack' -and $_.Category -eq 'StartupItem' }).Count |
+            Should -Be $script:LiveScreen.Startup.ProtectedTaskCount
+    }
+
+    It 'holds back exactly ProtectedServiceCount services, in both sections that carry them' {
+        @($script:LiveSection['StartupItems'].Inventory |
+            Where-Object { $_.Class -eq 'HeldBack' -and $_.Category -eq 'Service' }).Count |
+            Should -Be $script:LiveScreen.Startup.ProtectedServiceCount
+
+        @($script:LiveSection['Services'].Inventory | Where-Object { $_.Class -eq 'HeldBack' }).Count |
+            Should -Be $script:LiveScreen.Startup.ProtectedServiceCount
+    }
+
+    It 'holds back exactly ExcludedCount applications' {
+        @($script:LiveSection['InstalledApps'].Inventory | Where-Object { $_.Class -eq 'HeldBack' }).Count |
+            Should -Be $script:LiveScreen.Unused.ExcludedCount
+    }
+
+    It 'holds back exactly the locations the curated list marks inventory-only' {
+        @($script:LiveSection['JunkFiles'].Inventory | Where-Object { $_.Class -eq 'HeldBack' }).Count |
+            Should -Be $script:LiveScreen.Junk.InventoryOnlyCount
+    }
+
+    It 'never both flags a service and counts it as held back' {
+        # The class is decided in one ordered pass with Flagged first, so an
+        # overlap would surface as a held-back count that came out SHORT -- and
+        # the assertion above would fail without saying why. This says why.
+        #
+        # The two really are disjoint by construction: a service the exclusion
+        # gate holds back never reaches New-Finding, and the count loop applies
+        # the same orphan exemption the matcher does so a service flagged in
+        # spite of a protected class is not counted as held back. If that ever
+        # stops being true, the headline beside it is wrong -- a service that
+        # was flagged was not held back by anything.
+        $flagged = @($script:LiveScreen.Startup.Findings |
+            Where-Object { $_.Category -eq 'Service' } | ForEach-Object { [string] $_.Id })
+        $held = @($script:LiveScreen.Startup.InventoryVerdict | ForEach-Object { [string] $_.Id })
+
+        foreach ($id in $held) {
+            $flagged | Should -Not -Contain $id -Because "service '$id' is counted as held back and was flagged anyway"
+        }
+    }
+
+    It 'gives the two sections that share the startup scan the same verdict on one object' {
+        # A service appears in the startup section's inventory and in its own.
+        # The class is a judgement about the OBJECT, so it cannot differ between
+        # the two tables that draw it.
+        $startupServices = @{}
+        foreach ($entry in @($script:LiveSection['StartupItems'].Inventory | Where-Object { $_.Category -eq 'Service' })) {
+            $startupServices[$entry.Id] = $entry.Class
+        }
+
+        @($startupServices.Keys).Count | Should -Be @($script:LiveSection['Services'].Inventory).Count
+
+        foreach ($entry in $script:LiveSection['Services'].Inventory) {
+            $startupServices.ContainsKey($entry.Id) | Should -BeTrue -Because "'$($entry.Id)' is a service and belongs in both"
+            $startupServices[$entry.Id] | Should -Be $entry.Class
+        }
+    }
 }
 
 Describe 'P6-C1 a scan that dies never looks like a scan that found nothing' {
@@ -1076,5 +1272,474 @@ Describe 'P6-C1 the screen gained the scans and lost nothing' {
         $stripped = $script:Screen | Select-Object -Property * -ExcludeProperty Scan
         @(Format-ReviewScreen -Screen $stripped -Width 100) |
             Should -Be @(Format-ReviewScreen -Screen $script:Screen -Width 100)
+    }
+}
+
+Describe 'P6-C3 the payload carries the inventory each section inspected' {
+
+    # THE GAP THIS CLOSES. Section[].Row[] carries findings and nothing else,
+    # and the prototype's tables have four classes: the two extra ones are
+    # objects the engine deliberately did NOT flag. They were counted in the
+    # headline sentences and absent from the payload, so the only way to draw
+    # them was to parse the prose -- which is the thing this contract exists to
+    # avoid.
+
+    BeforeAll {
+        $script:Inventory = @($script:Payload['Section'] | ForEach-Object { $_['Inventory'] } |
+            Where-Object { $null -ne $_ })
+
+        function Get-PayloadSection {
+            param([Parameter(Mandatory)] [string] $Key)
+            @($script:Payload['Section'] | Where-Object { $_['Key'] -eq $Key })[0]
+        }
+    }
+
+    It 'carries an Inventory beside Row on every section' {
+        foreach ($section in $script:Payload['Section']) {
+            $section.Contains('Inventory')      | Should -BeTrue
+            $section.Contains('InventoryCount') | Should -BeTrue
+        }
+    }
+
+    It 'carries an InventoryCount that is the length of the list beside it' {
+        # Both are written from one array by one projection. A consumer that
+        # trusted the number over the list would draw a table shorter than the
+        # scan, and say nothing about it.
+        foreach ($section in $script:Payload['Section']) {
+            $section['InventoryCount'] | Should -Be @($section['Inventory']).Count
+        }
+    }
+
+    It 'inspected more than it flagged, in every section' {
+        foreach ($section in $script:Payload['Section']) {
+            @($section['Inventory']).Count |
+                Should -BeGreaterThan @($section['Row']).Count -Because "section '$($section['Key'])' must carry more than its findings"
+        }
+    }
+
+    It 'carries every common inventory field on every entry' {
+        foreach ($entry in $script:Inventory) {
+            foreach ($field in @($script:Contract.InventoryFields)) {
+                $entry.Contains($field) | Should -BeTrue -Because "entry '$($entry['Id'])' must carry $field"
+                $entry[$field] | Should -Not -BeNullOrEmpty
+            }
+        }
+    }
+
+    It 'gives every entry one of the three published classes' {
+        foreach ($entry in $script:Inventory) {
+            @($script:Contract.InventoryClasses) | Should -Contain $entry['Class']
+        }
+    }
+
+    It 'publishes the three classes, and NotFlagged is one of them' {
+        # A consumer that knew only Flagged and HeldBack would have nowhere to
+        # put the objects nothing was said about, and a consumer that knew only
+        # Flagged and NotFlagged would file every held-back object under
+        # "nothing was said" -- which is the under-report this project exists to
+        # prevent, in the same shape as reading three source statuses instead of
+        # four.
+        @($script:Contract.InventoryClasses) | Should -Be @('Flagged', 'HeldBack', 'NotFlagged')
+    }
+
+    It 'omits an optional field rather than writing it as null' {
+        # Absent is not null, here as everywhere. A row nothing flagged has
+        # nothing to say and carries no placeholder.
+        $quiet = @($script:Inventory | Where-Object { $_['Id'] -eq 'HKCU\Run\Quiet' })[0]
+        $quiet | Should -Not -BeNullOrEmpty
+        $quiet['Class'] | Should -Be 'NotFlagged'
+
+        foreach ($field in @($script:Contract.OptionalInventoryFields)) {
+            $quiet.Contains($field) | Should -BeFalse -Because "nothing was said about this entry, so it has no $field"
+        }
+    }
+
+    It 'carries a category''s own fields only on that category''s entries' {
+        $startup = @($script:Inventory | Where-Object { $_['Category'] -eq 'StartupItem' })[0]
+        $app     = @($script:Inventory | Where-Object { $_['Category'] -eq 'UnusedApp' })[0]
+        $junk    = @($script:Inventory | Where-Object { $_['Category'] -eq 'JunkFile' })[0]
+
+        foreach ($field in @('Mechanism', 'Scope', 'EnabledState', 'TargetExists')) {
+            $startup.Contains($field) | Should -BeTrue
+            $junk.Contains($field)    | Should -BeFalse
+            $app.Contains($field)     | Should -BeFalse
+        }
+
+        foreach ($field in @('Source', 'Detail', 'State')) {
+            $app.Contains($field)     | Should -BeTrue
+            $startup.Contains($field) | Should -BeFalse
+            $junk.Contains($field)    | Should -BeFalse
+        }
+
+        foreach ($field in @('Status', 'Exists', 'IsAssessed', 'EligibleBytes', 'IsSizeFloor')) {
+            $junk.Contains($field)    | Should -BeTrue
+            $startup.Contains($field) | Should -BeFalse
+            $app.Contains($field)     | Should -BeFalse
+        }
+    }
+
+    It 'writes a tri-state that could not be determined as present-and-null' {
+        # TargetExists and Exists are the two nullable booleans in this payload.
+        # Only $false is "proved absent"; $null is "could not be determined",
+        # and collapsing them would manufacture an orphan out of a permission
+        # the scan did not have.
+        $murky = @($script:Inventory | Where-Object { $_['Id'] -eq 'C:\Fixture\Startup\murky.lnk' })[0]
+        $murky.Contains('TargetExists') | Should -BeTrue
+        $murky['TargetExists']          | Should -BeNullOrEmpty
+        $script:Line | Should -Match '"TargetExists":null'
+
+        $orphan = @($script:Inventory | Where-Object { $_['Id'] -eq 'HKCU\Run\Fixture' })[0]
+        $orphan['TargetExists'] | Should -BeOfType [bool]
+        $orphan['TargetExists'] | Should -BeFalse
+
+        $temp = @($script:Inventory | Where-Object { $_['Id'] -eq 'windows-temp' })[0]
+        $temp.Contains('Exists') | Should -BeTrue
+        $temp['Exists']          | Should -BeNullOrEmpty
+        $script:Line | Should -Match '"Exists":null'
+    }
+
+    It 'names the curated entry that held an object back, structurally' {
+        # The prototype's table says "class: security (vpn-clients)". A consumer
+        # reads the class off a field, never out of the reason prose.
+        $held = @($script:Inventory | Where-Object { $_['Id'] -eq 'FixtureProtectedSvc' })[0]
+
+        $held['Class']     | Should -Be 'HeldBack'
+        $held['RuleId']    | Should -Be 'fixture-security-class'
+        $held['RuleClass'] | Should -Be 'security'
+        $held['Reason']    | Should -Be 'Security software is never offered, whatever a usage heuristic says about it.'
+        $held.Contains('FindingId') | Should -BeFalse -Because 'nothing flagged it, so there is no row to point at'
+    }
+
+    It 'lets a flagged entry name its row, which is not always its own Id' {
+        # Find-UnusedApp keys an Appx Finding on the package family name while
+        # the inventory keys on the app's own Id. A consumer joining on Id alone
+        # would miss the row and draw the application twice.
+        $unused = @($script:Inventory | Where-Object { $_['Id'] -eq 'Fixture.Unused_1.0.0.0_x64__8wekyb3d8bbwe' })[0]
+
+        $unused['Class']     | Should -Be 'Flagged'
+        $unused['FindingId'] | Should -Be 'Fixture.Unused_8wekyb3d8bbwe'
+        $unused['FindingId'] | Should -Not -Be $unused['Id']
+
+        $rowIds = @($script:Row | ForEach-Object { $_['FindingId'] })
+        $rowIds | Should -Contain $unused['FindingId']
+    }
+
+    It 'gives every flagged entry a row somewhere in the payload' {
+        $rowIds = @($script:Row | ForEach-Object { $_['FindingId'] })
+        foreach ($entry in @($script:Inventory | Where-Object { $_['Class'] -eq 'Flagged' })) {
+            $entry.Contains('FindingId') | Should -BeTrue -Because "'$($entry['Id'])' says it was flagged"
+            $rowIds | Should -Contain $entry['FindingId']
+        }
+    }
+
+    It 'carries the objects the OEM scan flagged, whose inventory is the OTHER scan''s' {
+        # The Installed apps section's inventory is the unused-app scan's
+        # classifications; the curated-list scan contributes only its judgement
+        # of them. Without that judgement an app flagged by the curated list
+        # would read as "looked at, nothing said" and be drawn twice.
+        $widget = @($script:Inventory | Where-Object { $_['Id'] -eq 'Fixture.Widget_8wekyb3d8bbwe' })[0]
+        $widget['Class']     | Should -Be 'Flagged'
+        $widget['FindingId'] | Should -Be 'Fixture.Widget_8wekyb3d8bbwe'
+    }
+
+    It 'never carries a whole source object along with an entry' {
+        # An inventory of 289 records is the largest thing in this payload and
+        # the easiest place for an object to arrive whole. The writer would
+        # throw on a PSObject, so this says the projection did not copy one
+        # into a hashtable either.
+        foreach ($name in @('App', 'InventoryVerdict', 'ResolvedPath', 'DeclaredPath',
+                            'MatchedSignals', 'SignalDetail', 'EligibleFile', 'ProfileBreakdown')) {
+            foreach ($entry in $script:Inventory) {
+                $entry.Contains($name) | Should -BeFalse -Because "entry '$($entry['Id'])' must not carry $name"
+            }
+        }
+    }
+}
+
+Describe 'P6-C3 the inventory counts agree with the scan''s own count properties' {
+
+    # THE TEST THAT IS WORTH MORE THAN IT LOOKS. The headline sentences quote
+    # InventoryCount, ProtectedTaskCount and ProtectedServiceCount, and until
+    # this chunk they were numbers in prose that nothing could check against a
+    # list. NOTHING HERE PARSES A HEADLINE SENTENCE.
+
+    BeforeAll {
+        function Get-InventorySection {
+            param([Parameter(Mandatory)] [string] $Key)
+            @($script:Screen.Section | Where-Object { $_.Key -eq $Key })[0]
+        }
+
+        function Measure-InventoryClass {
+            param(
+                [Parameter(Mandatory)] [AllowNull()] $Section,
+                [Parameter(Mandatory)] [string] $Class,
+                [Parameter()] [AllowNull()] [string] $Category
+            )
+            $entries = @($Section.Inventory | Where-Object { $_.Class -eq $Class })
+            if (-not [string]::IsNullOrWhiteSpace($Category)) {
+                $entries = @($entries | Where-Object { $_.Category -eq $Category })
+            }
+            @($entries).Count
+        }
+
+        $script:StartupScan = @($script:Screen.Scan | Where-Object { $_.Detector -eq 'StartupItems' })[0]
+    }
+
+    It 'gives the startup section one entry per inventoried startup object' {
+        (Get-InventorySection -Key 'StartupItems').Inventory.Count |
+            Should -Be $script:StartupScan.InventoryCount
+    }
+
+    It 'holds back exactly ProtectedTaskCount scheduled tasks in the startup section' {
+        Measure-InventoryClass -Section (Get-InventorySection -Key 'StartupItems') -Class 'HeldBack' -Category 'StartupItem' |
+            Should -Be 1
+    }
+
+    It 'holds back exactly ProtectedServiceCount services, in both sections that carry them' {
+        # The services appear twice: once in the startup section, whose headline
+        # counts everything that starts with the PC, and once in their own. The
+        # class is a judgement about the OBJECT, so it is the same in both.
+        Measure-InventoryClass -Section (Get-InventorySection -Key 'StartupItems') -Class 'HeldBack' -Category 'Service' |
+            Should -Be 1
+        Measure-InventoryClass -Section (Get-InventorySection -Key 'Services') -Class 'HeldBack' |
+            Should -Be 1
+    }
+
+    It 'gives the services section one entry per service the startup scan inventoried' {
+        (Get-InventorySection -Key 'Services').Inventory.Count |
+            Should -Be 2 -Because 'the fixture scan reports MechanismCount.Service = 2'
+    }
+
+    It 'holds back exactly ExcludedCount applications' {
+        Measure-InventoryClass -Section (Get-InventorySection -Key 'InstalledApps') -Class 'HeldBack' |
+            Should -Be 1
+    }
+
+    It 'gives the installed-apps section one entry per classification' {
+        (Get-InventorySection -Key 'InstalledApps').Inventory.Count | Should -Be 5
+    }
+
+    It 'gives the junk section one entry per curated location, flagged or not' {
+        $junk = Get-InventorySection -Key 'JunkFiles'
+        $junk.Inventory.Count | Should -Be 3
+        Measure-InventoryClass -Section $junk -Class 'Flagged'    | Should -Be 1
+        Measure-InventoryClass -Section $junk -Class 'HeldBack'   | Should -Be 1
+        Measure-InventoryClass -Section $junk -Class 'NotFlagged' | Should -Be 1
+    }
+
+    It 'accounts for every inventoried object exactly once' {
+        foreach ($section in $script:Screen.Section) {
+            $total = 0
+            foreach ($class in @($script:Contract.InventoryClasses)) {
+                $total += Measure-InventoryClass -Section $section -Class $class
+            }
+            $total | Should -Be @($section.Inventory).Count -Because "section '$($section.Key)' must classify every entry once"
+        }
+    }
+}
+
+Describe 'P6-C3 the console screen did not change' {
+
+    # Format-ReviewSection and Format-ReviewScreen do not read Inventory, so the
+    # console screen is byte for byte what P4-C1 shipped. The same arrangement
+    # P6-C1 made for the Scan records, asserted the same way.
+
+    BeforeAll {
+        $script:Rendered = @(Format-ReviewScreen -Screen $script:Screen -Width 100)
+
+        $script:Stripped = Get-JsonContractFixtureScreen
+        foreach ($section in $script:Stripped.Section) { $section.Inventory = [psobject[]] @() }
+        $script:StrippedLines = @(Format-ReviewScreen -Screen $script:Stripped -Width 100)
+    }
+
+    It 'renders the same lines whether or not the inventory is there' {
+        $script:Rendered.Count | Should -Be $script:StrippedLines.Count
+        for ($index = 0; $index -lt $script:Rendered.Count; $index++) {
+            $script:Rendered[$index] | Should -Be $script:StrippedLines[$index]
+        }
+    }
+
+    It 'never prints one of the inventory class names' {
+        # CASE-SENSITIVELY, and the reason is a real near-miss: the startup
+        # table's own column heading is "Why flagged", which a case-insensitive
+        # match on 'Flagged' hits. The class names are capitalised machine
+        # vocabulary and the screen's prose is not, so the case IS the test.
+        foreach ($line in $script:Rendered) {
+            foreach ($class in @($script:Contract.InventoryClasses)) {
+                $line | Should -Not -CMatch ([regex]::Escape($class))
+            }
+        }
+    }
+}
+
+Describe 'P6-C3 the detectors publish what their exclusion gate held back' {
+
+    # The change that made the rest of this chunk possible, and the property
+    # that matters most about it: the rule is evaluated ONCE. Before this,
+    # Invoke-UnusedAppScan ran Get-UnusedAppExclusionMatch a second time over
+    # the same classifications purely to arrive at ExcludedCount.
+
+    BeforeAll {
+        $script:ExclusionEntry = InModuleScope Win11Optimizer.Engine {
+            @([pscustomobject]@{
+                Id                    = 'fixture-security'
+                DisplayName           = 'Fixture security software'
+                Class                 = 'security'
+                Reason                = 'Security software is never flagged as unused, full stop.'
+                AppxPackageName       = [string[]] @()
+                AppxPackageFamilyName = [string[]] @()
+                RegistryDisplayName   = [string[]] @('Fixture Guard*')
+                RegistryPublisher     = [string[]] @()
+            })
+        }
+
+        $script:Classification = InModuleScope Win11Optimizer.Engine {
+            $held = New-InstalledApp -Source 'RegistryUninstall' -Id 'HKLM\Fixture\Guard' `
+                -Name 'Fixture Guard' -DisplayName 'Fixture Guard' -Publisher 'Fixture Security Inc'
+            $free = New-InstalledApp -Source 'RegistryUninstall' -Id 'HKLM\Fixture\Toy' `
+                -Name 'Fixture Toy' -DisplayName 'Fixture Toy' -Publisher 'Fixture Ltd'
+
+            # MatchedSignals IS NOT EMPTY, and that is not padding. Only the
+            # branch of Get-AppUsageClassification that found at least one
+            # signal can produce State 'Unused', so an Unused classification
+            # with no matched signal is a shape the classifier cannot make --
+            # and a fabricated one walks into a real 5.1 divergence at
+            # Detectors\UnusedApps.ps1:1108. See the report: @([string[]] $null)
+            # is $null on 5.1 and a one-element array on 7, so `.Count` on it
+            # throws under Set-StrictMode -Version Latest on one shell only.
+            # A fixture that cannot occur is not worth a red test on 5.1.
+            @(
+                [pscustomobject]@{ App = $held; DisplayName = 'Fixture Guard'; State = 'Unused'
+                                   Reason = 'No launch recorded.'; UnusedWindowDays = 180; MinimumAgeDays = 30
+                                   MatchedSignals = [string[]] @('UserAssist')
+                                   SignalDetail = [string[]] @('UserAssist recorded 2026-01-02 (fixture)')
+                                   LastUsedUtc = ([datetime]::new(2026, 1, 2, 0, 0, 0, [System.DateTimeKind]::Utc))
+                                   LastUsedAgeDays = 247.0; InstallDate = $null; InstallAgeDays = $null }
+                [pscustomobject]@{ App = $free; DisplayName = 'Fixture Toy'; State = 'Unused'
+                                   Reason = 'No launch recorded.'; UnusedWindowDays = 180; MinimumAgeDays = 30
+                                   MatchedSignals = [string[]] @('UserAssist')
+                                   SignalDetail = [string[]] @('UserAssist recorded 2026-01-02 (fixture)')
+                                   LastUsedUtc = ([datetime]::new(2026, 1, 2, 0, 0, 0, [System.DateTimeKind]::Utc))
+                                   LastUsedAgeDays = 247.0; InstallDate = $null; InstallAgeDays = $null }
+            )
+        }
+    }
+
+    It 'records a verdict for what it flagged and for what it held back' {
+        $verdicts = New-Object System.Collections.Generic.List[psobject]
+        $findings = @(Find-UnusedApp -Classification $script:Classification -ExclusionEntry $script:ExclusionEntry -Verdict $verdicts)
+
+        @($findings).Count | Should -Be 1
+        @($verdicts).Count | Should -Be 2
+
+        $held = @($verdicts | Where-Object { $_.Class -eq 'HeldBack' })
+        @($held).Count      | Should -Be 1
+        $held[0].Id         | Should -Be 'HKLM\Fixture\Guard'
+        $held[0].RuleId     | Should -Be 'fixture-security'
+        $held[0].RuleClass  | Should -Be 'security'
+        $held[0].Reason     | Should -Be 'Security software is never flagged as unused, full stop.'
+        $held[0].FindingId  | Should -BeNullOrEmpty
+
+        $flagged = @($verdicts | Where-Object { $_.Class -eq 'Flagged' })
+        @($flagged).Count   | Should -Be 1
+        $flagged[0].Id        | Should -Be 'HKLM\Fixture\Toy'
+        $flagged[0].FindingId | Should -Be 'HKLM\Fixture\Toy'
+        $flagged[0].RuleId    | Should -BeNullOrEmpty
+    }
+
+    It 'still returns the same findings when no list is handed in' {
+        # The out-collection is optional and additive: four existing call sites
+        # pass nothing and must be unaffected.
+        $with    = @(Find-UnusedApp -Classification $script:Classification -ExclusionEntry $script:ExclusionEntry -Verdict (New-Object System.Collections.Generic.List[psobject]))
+        $without = @(Find-UnusedApp -Classification $script:Classification -ExclusionEntry $script:ExclusionEntry)
+
+        @($without).Count | Should -Be @($with).Count
+        @($without | ForEach-Object { $_.Id }) | Should -Be @($with | ForEach-Object { $_.Id })
+    }
+
+    It 'never puts a verdict on the Finding stream' {
+        # The verdicts go into the caller's list, not onto the pipeline. A
+        # second record type mixed into a Finding stream would break every
+        # existing consumer of it.
+        $verdicts = New-Object System.Collections.Generic.List[psobject]
+        $findings = @(Find-UnusedApp -Classification $script:Classification -ExclusionEntry $script:ExclusionEntry -Verdict $verdicts)
+
+        foreach ($finding in $findings) {
+            $finding.PSObject.TypeNames | Should -Contain 'Win11Optimizer.Finding'
+        }
+    }
+
+    It 'records one verdict per inventory record inside a grouped curated finding' {
+        # Find-KnownBloatware deduplicates per (whitelist entry, RemovalMethod),
+        # so one Finding can cover a per-user Appx package AND its provisioned
+        # twin. Recording one verdict per FINDING would leave the second record
+        # looking like something nothing was said about.
+        $whitelist = InModuleScope Win11Optimizer.Engine {
+            @([pscustomobject]@{
+                Id                    = 'fixture-widget'
+                DisplayName           = 'Fixture Widget'
+                Vendor                = 'Fixture'
+                Reason                = 'Preinstalled and unused.'
+                EvidenceSource        = 'curated'
+                RequiresConsent       = $false
+                AppxPackageName       = [string[]] @('Fixture.Widget')
+                AppxPackageFamilyName = [string[]] @()
+                RegistryDisplayName   = [string[]] @()
+                RegistryPublisher     = [string[]] @()
+            })
+        }
+
+        $apps = InModuleScope Win11Optimizer.Engine {
+            @(
+                (New-InstalledApp -Source 'AppxPackage' -Id 'Fixture.Widget_8wekyb3d8bbwe' `
+                    -Name 'Fixture.Widget' -DisplayName 'Fixture Widget' -PackageFamilyName 'Fixture.Widget_8wekyb3d8bbwe')
+                (New-InstalledApp -Source 'AppxProvisionedPackage' -Id 'Fixture.Widget_1.0.0.0_neutral_8wekyb3d8bbwe' `
+                    -Name 'Fixture.Widget' -DisplayName 'Fixture Widget' -PackageFamilyName 'Fixture.Widget_8wekyb3d8bbwe')
+            )
+        }
+
+        $verdicts = New-Object System.Collections.Generic.List[psobject]
+        $findings = @(Find-KnownBloatware -InstalledApp $apps -KnownBloatwareEntry $whitelist -Verdict $verdicts)
+
+        @($findings).Count | Should -Be 1
+        @($verdicts).Count | Should -Be 2
+        @($verdicts | ForEach-Object { $_.Class } | Sort-Object -Unique) | Should -Be @('Flagged')
+        @($verdicts | ForEach-Object { $_.FindingId } | Sort-Object -Unique) | Should -Be @($findings[0].Id)
+        @($verdicts | ForEach-Object { $_.Id }) | Should -Be @($apps | ForEach-Object { $_.Id })
+    }
+
+    It 'evaluates the exclusion rule once, not once per count' {
+        # THE REGRESSION THIS CHANGE EXISTS TO PREVENT COMING BACK.
+        # Invoke-UnusedAppScan used to loop over the classifications a second
+        # time, calling Get-UnusedAppExclusionMatch again purely to arrive at
+        # ExcludedCount. One safety rule evaluated in two places is two places
+        # for it to be wrong, and the two really can disagree -- the second loop
+        # had no null-App guard and the gate does.
+        #
+        # AST, not a string count: the file also DEFINES that function, and a
+        # text search cannot tell a definition from a call.
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $script:EngineRoot 'Detectors\UnusedApps.ps1'), [ref] $tokens, [ref] $errors)
+
+        $calls = @($ast.FindAll({
+            param($node) $node -is [System.Management.Automation.Language.CommandAst]
+        }, $true) | Where-Object { $_.GetCommandName() -eq 'Get-UnusedAppExclusionMatch' })
+
+        @($calls).Count | Should -Be 1 -Because 'the exclusion gate is invoked in exactly one place, inside Find-UnusedApp'
+
+        # And it is inside the matcher, not beside it in the scan function.
+        $enclosing = $calls[0].Parent
+        while ($null -ne $enclosing -and $enclosing -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+            $enclosing = $enclosing.Parent
+        }
+        $enclosing.Name | Should -Be 'Find-UnusedApp'
+    }
+
+    It 'derives ProtectedServiceCount from the records it kept' {
+        $source = [System.IO.File]::ReadAllText((Join-Path $script:EngineRoot 'Detectors\StartupItems.ps1'))
+        $source | Should -Match '\$protectedServiceCount\s*=\s*\$protectedService\.Count'
+        $source | Should -Not -Match '\$protectedServiceCount\+\+'
     }
 }

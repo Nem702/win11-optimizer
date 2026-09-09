@@ -147,6 +147,45 @@ $script:ScanJsonCategoryRowField = [ordered]@{
 # projection below reads a list instead of repeating a condition.
 $script:ScanJsonNumericRowField = @('EligibleBytes', 'EligibleFileCount', 'MinimumAgeDays')
 
+# ---- the inventory, chunk P6-C3 -----------------------------------------
+#
+# WHAT EACH SECTION LOOKED AT, beside what it flagged. Row[] carries findings
+# and nothing else, and a table with four classes needs the other two: the
+# objects a rule held back, and the objects nothing was flagged about. Both
+# were counted in the headline sentences and neither was in the payload, so
+# the only way to draw them was to parse the prose -- which is the thing this
+# contract exists to avoid.
+#
+# DEFINED BY THE SCAN, NOT BY THE SCREEN. The obvious alternative was to carry
+# only the two classes the prototype's tables draw today. Rejected: that
+# couples the contract to one screen's present design and has to be
+# renegotiated the first time a table changes. Inventory[] is what the section
+# looked at; which of it a screen draws is the screen's business.
+$script:ScanJsonInventoryField = @('Id', 'DisplayName', 'Category', 'Class')
+
+# Present only where the engine had one, and ABSENT otherwise rather than
+# null: an object nothing held back has no reason, and a null there would be a
+# placeholder for something that does not exist. FindingId is the join back
+# into Row[] and is on flagged entries only; RuleId and RuleClass name the
+# curated entry that held an object back, so a consumer reads 'security'
+# structurally instead of string-matching the reason prose.
+$script:ScanJsonOptionalInventoryField = @('Reason', 'FindingId', 'RuleId', 'RuleClass')
+
+# The fields an inventory entry carries only where its category has them. Same
+# rule as $script:ScanJsonCategoryRowField, and the same rule the screen's own
+# $script:ReviewInventoryCategoryField keeps -- these are read by PRESENCE on
+# the entry rather than by restating that table here, so the two cannot
+# disagree.
+#
+# A listed field is present even when its value is null, and on two of them
+# that is load-bearing: TargetExists and Exists are TRI-STATES whose null means
+# "could not be determined", which is not the same claim as false.
+$script:ScanJsonInventoryNumericField = @(
+    'FileCount', 'TotalBytes', 'EligibleFileCount', 'EligibleBytes', 'MinimumAgeDays'
+)
+
+$script:ScanJsonInventoryBooleanField = @('TargetExists', 'Exists', 'IsAssessed', 'IsSizeFloor')
+
 # What a row's Plan carries, and it is a closed list for a reason. Step is NOT
 # on it and neither is RollbackData: a FileDeleteSet step carries the whole
 # eligible file list, which on this machine is 773 records for one row and up
@@ -424,6 +463,14 @@ function Get-OptimizerScanContract {
         removed, or when one of the value sets below changes. Adding an optional
         field does not change it.
 
+        P6-C3 ADDED Inventory[] AND InventoryCount TO EVERY SECTION AND LEFT THE
+        VERSION AT 1, deliberately. Nothing was removed, renamed or retyped; no
+        record kind moved; none of the value sets that existed changed -- two
+        new ones were published beside them. The C# binds by key presence rather
+        than by shape, so a consumer built against the old payload reads the new
+        one and simply does not see the new field. That is what additive means
+        here, and it is why the version holds.
+
     .EXAMPLE
         (Get-OptimizerScanContract).SourceStatuses
     #>
@@ -440,20 +487,29 @@ function Get-OptimizerScanContract {
     }
 
     [pscustomobject][ordered]@{
-        SchemaVersion      = [int] $script:ScanJsonSchemaVersion
-        RecordKinds        = [string[]] $script:ScanJsonKinds
-        EnvelopeFields     = [string[]] $script:ScanJsonEnvelopeField
-        Phases             = [string[]] $script:ScanJsonPhases
-        SourceStatuses     = [string[]] $script:ScanSourceStatuses
-        IncompleteStatuses = [string[]] $script:ScanSourceIncompleteStatuses
-        RowFields          = [string[]] $script:ScanJsonRowField
-        CategoryRowFields  = $categoryField
-        PlanFields         = [string[]] $script:ScanJsonPlanField
-        ExitCodes          = [pscustomobject][ordered]@{
+        SchemaVersion           = [int] $script:ScanJsonSchemaVersion
+        RecordKinds             = [string[]] $script:ScanJsonKinds
+        EnvelopeFields          = [string[]] $script:ScanJsonEnvelopeField
+        Phases                  = [string[]] $script:ScanJsonPhases
+        SourceStatuses          = [string[]] $script:ScanSourceStatuses
+        IncompleteStatuses      = [string[]] $script:ScanSourceIncompleteStatuses
+        RowFields               = [string[]] $script:ScanJsonRowField
+        CategoryRowFields       = $categoryField
+        # The inventory's own vocabulary, chunk P6-C3. InventoryClasses is the
+        # one a second codebase is most likely to get wrong, and it is the same
+        # shape of mistake as reading three source statuses instead of four: a
+        # consumer that knew only 'Flagged' and 'NotFlagged' would file every
+        # held-back object under "nothing was said about it", which is the
+        # under-report this project exists to prevent.
+        InventoryFields         = [string[]] $script:ScanJsonInventoryField
+        OptionalInventoryFields = [string[]] $script:ScanJsonOptionalInventoryField
+        InventoryClasses        = [string[]] $script:ReviewInventoryClasses
+        PlanFields              = [string[]] $script:ScanJsonPlanField
+        ExitCodes               = [pscustomobject][ordered]@{
             ResultWritten = [int] $script:ScanJsonExitResultWritten
             NoResult      = [int] $script:ScanJsonExitNoResult
         }
-        NewLine            = [string] $script:ScanJsonNewLine
+        NewLine                 = [string] $script:ScanJsonNewLine
     }
 }
 
@@ -640,6 +696,56 @@ function ConvertTo-OptimizerScanRowRecord {
     $record
 }
 
+function ConvertTo-OptimizerScanInventoryRecord {
+    <#
+        One inventory entry: an object the section inspected, and what the
+        engine did with it.
+
+        THE KEYS ARE THE ENTRY'S OWN, IN THE ENTRY'S OWN ORDER. The screen built
+        it as an ordered hashtable and added a key only where the field applies,
+        so walking the properties here reproduces exactly that -- one table of
+        which category carries which field, in Review\Screen.ps1, rather than a
+        second copy of it here that could disagree with the first. Property
+        order off a [pscustomobject] built from an [ordered] hashtable is
+        construction order on both shells, which is what keeps the bytes
+        identical.
+
+        ABSENT IS NOT NULL, and it comes out of that walk for free: a field the
+        entry does not carry produces no key. A field it DOES carry is written
+        even when its value is null, which on the two tri-states -- TargetExists
+        and Exists -- is the engine saying it looked and could not tell. A
+        consumer must not read either of those nulls as false.
+
+        The type of each value is decided by name against the two lists above,
+        so a count never acquires a decimal point and a tri-state is never
+        coerced to a bare bool.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Entry
+    )
+
+    $record = [ordered]@{}
+    if ($null -eq $Entry) { return $record }
+
+    foreach ($property in $Entry.PSObject.Properties) {
+        $name  = [string] $property.Name
+        $value = $property.Value
+
+        if ($script:ScanJsonInventoryNumericField -contains $name) {
+            $record[$name] = ConvertTo-OptimizerScanNumber -Value $value
+        }
+        elseif ($script:ScanJsonInventoryBooleanField -contains $name) {
+            $record[$name] = ConvertTo-OptimizerScanBoolean -Value $value
+        }
+        else {
+            $record[$name] = ConvertTo-OptimizerScanString -Value $value
+        }
+    }
+
+    $record
+}
+
 function ConvertTo-OptimizerScanSectionRecord {
     # One section's decided content. The wording is the screen's; this copies it.
     [CmdletBinding()]
@@ -652,6 +758,12 @@ function ConvertTo-OptimizerScanSectionRecord {
     foreach ($row in @(Get-OptimizerProperty -InputObject $Section -Name 'Row' -Default @())) {
         if ($null -eq $row) { continue }
         $null = $rows.Add((ConvertTo-OptimizerScanRowRecord -Row $row -Planner $Planner))
+    }
+
+    $inventory = New-Object System.Collections.Generic.List[psobject]
+    foreach ($entry in @(Get-OptimizerProperty -InputObject $Section -Name 'Inventory' -Default @())) {
+        if ($null -eq $entry) { continue }
+        $null = $inventory.Add((ConvertTo-OptimizerScanInventoryRecord -Entry $entry))
     }
 
     [ordered]@{
@@ -672,6 +784,15 @@ function ConvertTo-OptimizerScanSectionRecord {
         EmptyText         = ConvertTo-OptimizerScanString -Value (Get-OptimizerProperty -InputObject $Section -Name 'EmptyText')
         RowCount          = [long] $rows.Count
         Row               = [psobject[]] @($rows.ToArray())
+        # BESIDE Row[], NOT INSTEAD OF IT. Row[] is what this section flagged;
+        # Inventory[] is everything it looked at, the flagged objects included,
+        # so InventoryCount here is the scan's own inventory count and a test
+        # asserts exactly that per section. Assembled by the screen -- see
+        # New-ReviewStartupInventory and its two siblings -- because deciding
+        # which rule held an object back is a judgement, and this file makes
+        # none.
+        InventoryCount    = [long] $inventory.Count
+        Inventory         = [psobject[]] @($inventory.ToArray())
     }
 }
 

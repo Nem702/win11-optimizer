@@ -2061,16 +2061,32 @@ function Invoke-StartupItemScan {
     $orphanCount  = @($findings | Where-Object { $_.FindingReason -eq $script:StartupReasonOrphan }).Count
     $curatedCount = @($findings | Where-Object { $_.FindingReason -eq $script:StartupReasonCurated }).Count
 
-    # How many enabled services the exclusion list held back, so a zero-Finding
-    # scan can be told apart from an exclusion list that swallowed the lot. It
-    # applies the same orphan exemption the matcher does -- a service that matched
-    # a class but was flagged anyway was not held back by anything, and counting it
-    # here would make the number disagree with the Findings beside it.
+    # WHICH enabled services the exclusion list held back, so a zero-Finding scan
+    # can be told apart from an exclusion list that swallowed the lot. It applies
+    # the same orphan exemption the matcher does -- a service that matched a class
+    # but was flagged anyway was not held back by anything, and counting it here
+    # would make the number disagree with the Findings beside it.
     #
-    # Deliberately no publisher resolution in this loop: it runs across the whole
-    # inventory, and the point of resolving lazily is that this is exactly where a
-    # signature check per service would be paid for.
-    $protectedServiceCount = 0
+    # P6-C3 MADE THIS LOOP RECORD RATHER THAN COUNT, and ProtectedServiceCount is
+    # now the length of what it recorded. The predicate is unchanged, line for
+    # line: there is still exactly ONE evaluation of this rule per scan, and a
+    # test asserts the number it produces on this machine has not moved (it has
+    # moved once before, 8 -> 10 in P3-C1a, and P4-C1 binds to it).
+    #
+    # A NUMBER THAT CANNOT BE TURNED BACK INTO A LIST IS PROSE. The review screen
+    # says "10 more were held back as protected"; without these records the only
+    # way to draw those ten rows would be to parse that sentence, which is the
+    # thing the JSON contract exists to avoid.
+    #
+    # THIS IS NOT THE SAME PREDICATE AS THE MATCHER'S OWN EXCLUSION GATE, and the
+    # two are deliberately not merged. The matcher reaches its gate only for a
+    # service that is already a candidate -- a curated match or a proved orphan --
+    # and it gets a second chance at the resolved signer; this runs across every
+    # enabled service and does no publisher resolution at all, because the point
+    # of resolving lazily is that this is exactly where a signature check per
+    # service would be paid for. Merging them would change what
+    # ProtectedServiceCount means.
+    $protectedService = New-Object System.Collections.Generic.List[psobject]
     foreach ($item in $items) {
         if ($item.Mechanism -ne $script:StartupMechanismService) { continue }
         if ($item.EnabledState -ne $script:StartupStateEnabled) { continue }
@@ -2083,8 +2099,13 @@ function Invoke-StartupItemScan {
         $itemIsOrphan = ($item.TargetExists -is [bool] -and -not $item.TargetExists)
         if ($itemIsOrphan -and $OrphanProofServiceClass -notcontains $matchedClass) { continue }
 
-        $protectedServiceCount++
+        $protectedService.Add((New-InventoryVerdict -Id ([string] $item.Id) -Class $script:InventoryVerdictHeldBack `
+            -RuleId ([string](Get-OptimizerProperty -InputObject $match -Name 'Id')) `
+            -RuleClass $matchedClass `
+            -Reason ([string](Get-OptimizerProperty -InputObject $match -Name 'Reason'))))
     }
+
+    $protectedServiceCount = $protectedService.Count
 
     $mechanismCount = [ordered]@{}
     foreach ($mechanism in $script:StartupMechanismRunKey, $script:StartupMechanismFolder, $script:StartupMechanismTask, $script:StartupMechanismService) {
@@ -2122,6 +2143,14 @@ function Invoke-StartupItemScan {
             CuratedMatchCount     = $curatedCount
             ReadStatistic         = $inventory.Statistic
             StartupItems          = [psobject[]] $items
+            # WHICH services ProtectedServiceCount counted, by service name.
+            # Services only: a protected-namespace task is already marked on its
+            # own record (IsProtectedNamespace), and a second copy of that here
+            # would be a place for the two to disagree. Every record is
+            # 'HeldBack'; a flagged startup entry needs no verdict because its
+            # Finding carries the item's own Id and Mechanism, which is an exact
+            # join already.
+            InventoryVerdict      = [psobject[]] @($protectedService.ToArray())
         })
 
     Write-OptimizerLog -EventName 'StartupScanCompleted' `

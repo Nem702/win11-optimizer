@@ -78,7 +78,7 @@ namespace Win11Optimizer.Gui.Core.Tests
             Assert.Equal("fixture", result.UserName);
             Assert.False(result.IsElevated);
             Assert.False(result.IsComplete);
-            Assert.Equal(4, result.RowCount);
+            Assert.Equal(5, result.RowCount);
 
             Assert.Equal(
                 new[] { "StartupItems", "UnusedApps", "OemBloatware", "JunkFiles" },

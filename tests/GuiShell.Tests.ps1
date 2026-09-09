@@ -156,9 +156,28 @@ Describe 'the GUI data layer' {
     }
 }
 
-# ---- the engine is unchanged ----------------------------------------------
+# ---- the engine matches what was reviewed ---------------------------------
+#
+# P6-C2 WROTE THIS AS "the GUI chunk does not touch the engine" and P6-C3 CHANGED
+# THE ENGINE ON PURPOSE, so the claim it makes has been restated rather than the
+# guard deleted.
+#
+# What it always actually asserted is that the engine folder is byte for byte
+# what the committed manifest records -- which is stronger and more useful than
+# "unchanged since P6-C2", because it keeps working after a chunk that is
+# allowed to change the engine. A chunk that changes an engine file regenerates
+# the manifest and the DIFF ON THIS FILE IS THE REVIEW: one line per file, sorted
+# by path, so a reviewer sees exactly which engine files a chunk touched without
+# depending on what git happens to know about the tree.
+#
+# P6-C3 regenerated it for six files: Shared\Inventory.ps1 (the verdict record),
+# the three detectors that now publish what their exclusion gate held back, and
+# Review\Screen.ps1 and Review\Json.ps1 for the inventory the contract carries.
+#
+#     . tests\Fixtures\EngineManifest.ps1
+#     Write-OptimizerEngineManifest
 
-Describe 'the GUI chunk does not touch the engine' {
+Describe 'the engine folder is what the committed manifest records' {
 
     BeforeAll {
         . (Join-Path -Path $PSScriptRoot -ChildPath 'Fixtures\EngineManifest.ps1')
@@ -179,8 +198,8 @@ Describe 'the GUI chunk does not touch the engine' {
         $recordedPath = @($script:Recorded -split "`n" | Where-Object { $_ } | ForEach-Object { ($_ -split '  ', 2)[1] })
         $currentPath = @($script:Current -split "`n" | Where-Object { $_ } | ForEach-Object { ($_ -split '  ', 2)[1] })
 
-        ($currentPath | Where-Object { $_ -notin $recordedPath }) | Should -BeNullOrEmpty -Because 'no engine file may be added by this chunk'
-        ($recordedPath | Where-Object { $_ -notin $currentPath }) | Should -BeNullOrEmpty -Because 'no engine file may be removed by this chunk'
+        ($currentPath | Where-Object { $_ -notin $recordedPath }) | Should -BeNullOrEmpty -Because 'an engine file was added without the manifest being regenerated'
+        ($recordedPath | Where-Object { $_ -notin $currentPath }) | Should -BeNullOrEmpty -Because 'an engine file was removed without the manifest being regenerated'
     }
 
     It 'has the same bytes in every engine file' {
@@ -192,7 +211,7 @@ Describe 'the GUI chunk does not touch the engine' {
         $changed = @(Compare-Object -ReferenceObject $recorded -DifferenceObject $current |
             ForEach-Object { ($_.InputObject -split '  ', 2)[1] } | Sort-Object -Unique)
 
-        $changed -join ', ' | Should -BeNullOrEmpty -Because 'src\Win11Optimizer.Engine is not this chunk''s to change'
+        $changed -join ', ' | Should -BeNullOrEmpty -Because 'an engine file changed and tests\Fixtures\engine-manifest.txt was not regenerated with it'
     }
 }
 
