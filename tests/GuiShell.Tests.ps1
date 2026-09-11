@@ -308,6 +308,14 @@ Describe 'the shell is ASCII and carries nothing about this machine' {
         # tests on 5.1. docs\REVIEW.md.
         $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
         @($bytes | Where-Object { $_ -gt 126 }).Count | Should -Be 0
+
+        # AND NOTHING BELOW 0x20 EITHER, apart from the three a text file is
+        # allowed. This is the other half of the acceptance criterion, which is
+        # "grep -n '[^ -~\t]' comes back clean" and not "no byte above 0x7E":
+        # P6-C4 reached for a 0x01 as a key separator and a check that only
+        # looked upwards would have let it through.
+        @($bytes | Where-Object { $_ -lt 32 -and $_ -ne 9 -and $_ -ne 10 -and $_ -ne 13 }).Count |
+            Should -Be 0
     }
 
     It 'bakes no user profile, user name or repository path into the source' {
@@ -337,6 +345,81 @@ Describe 'the shell is ASCII and carries nothing about this machine' {
                 $wide | Should -Not -BeLike "*$value*" -Because "$($file.Name) must not carry '$value'"
             }
         }
+    }
+}
+
+# ---- the scroll rule, which had no test until P6-C4 -------------------------
+#
+# THE DEFECT THIS GUARDS AGAINST IS REAL AND IT HAPPENED ONCE. P6-C2 section
+# 13.1: a selection message called render(), render() rebuilds the .col that IS
+# the scroller, and so every selection sent the view back to the top and closed
+# every open fold. The harness that proved the fix was scratch, by the testing
+# split -- rendering is judged by eye -- so nothing in the suite has held the
+# rule since.
+#
+# What CAN be held here is the shape the rule turns on, and it is the shape that
+# broke: which functions are allowed to call render(), and which ones must
+# update what is already on screen instead. P6-C4 adds a second scroller
+# (.tscroll, inside the category tables) and two more in-place updaters, so the
+# same mistake now has three places to happen in.
+
+Describe 'nothing that only changes a screen rebuilds its scroller' {
+
+    BeforeAll {
+        $script:AppJs = Get-Content -Raw -Path (Join-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -ChildPath 'src\Win11Optimizer.Gui\Win11Optimizer.Gui\Web\app.js')
+        $script:AppCss = Get-Content -Raw -Path (Join-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -ChildPath 'src\Win11Optimizer.Gui\Win11Optimizer.Gui\Web\app.css')
+
+        function Get-JsFunctionBody {
+            <#
+                The body of a top-level function in app.js. The file indents
+                every top-level function by two spaces inside the IIFE, so the
+                first line that is exactly '  }' closes it and every nested
+                brace is indented further.
+            #>
+            param([Parameter(Mandatory)] [string] $Text, [Parameter(Mandatory)] [string] $Name)
+
+            $lines = $Text -split "`r?`n"
+            $start = -1
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match "^\s*function\s+$Name\s*\(") { $start = $i; break }
+            }
+            if ($start -lt 0) { throw "app.js has no function named '$Name'." }
+
+            for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -eq '  }') { return ($lines[($start + 1)..($i - 1)] -join "`n") }
+            }
+            throw "the body of '$Name' was not closed at the top level."
+        }
+    }
+
+    It 'calls render() from exactly three places' {
+        # The definition is not a call, so it is excluded by requiring the call
+        # to be a statement.
+        $call = @([regex]::Matches($script:AppJs, '(?m)(?<!function )\brender\(\);'))
+        @($call).Count | Should -Be 3 -Because 'render() throws the scroller away, so every new call site is a new chance to reintroduce the P6-C2 scroll defect'
+    }
+
+    It 'does not call render() from <_>' -ForEach @('applySelection', 'applyTable', 'fillTableBody', 'paintActionBar') {
+        $body = Get-JsFunctionBody -Text $script:AppJs -Name $_
+        $body | Should -Not -Match '\brender\(\)' -Because "$_ updates the screen that is already there"
+    }
+
+    It 'answers a selection and a table message without rendering' {
+        # The two message kinds that are a CHANGE to the screen on display
+        # rather than a new one, and both return before the render() at the
+        # bottom of the handler.
+        $script:AppJs | Should -Match 'if \(d\.screen === "selection"\) \{\s*\n\s*setSelected\(d\.selected\);\s*\n\s*applySelection\(\);\s*\n\s*return;'
+        $script:AppJs | Should -Match 'if \(d\.screen === "table"\) \{\s*\n\s*applyTable\(d\);\s*\n\s*return;'
+    }
+
+    It 'has exactly three scrollers, and they are the three that are named' {
+        # .col is the decisions screen, .tscroll is a category table's rows and
+        # .rail is the navigation. If a fourth appears, the rule above has to be
+        # applied to whatever builds it.
+        $rule = @([regex]::Matches($script:AppCss, '(?m)^\.?[A-Za-z0-9_.\- ]*\{[^}]*overflow(-y|-x)?:\s*auto'))
+        $selector = @($rule | ForEach-Object { ($_.Value -split '\{')[0].Trim() } | Sort-Object)
+
+        $selector | Should -Be @('.col', '.rail', '.tscroll')
     }
 }
 

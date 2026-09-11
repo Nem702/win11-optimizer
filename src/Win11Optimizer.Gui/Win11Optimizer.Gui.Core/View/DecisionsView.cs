@@ -100,9 +100,18 @@ namespace Win11Optimizer.Gui.Core.View
     /// One line of the inventory strip: what a section looked at, in the
     /// section's own words.
     /// </summary>
-    public sealed class InventoryRow
+    /// <remarks>
+    /// RENAMED FROM InventoryRow IN P6-C4, AND SO WAS THE PROPERTY THAT HOLDS
+    /// THESE -- DecisionsView.Inventory is now DecisionsView.Strip. It read
+    /// badly from inside the chunk that finally drew the inventory: this type
+    /// is the four summary lines under the queue, while SectionRecord.Inventory
+    /// is the object list those lines are ABOUT, and two things called
+    /// "inventory" in one file is somewhere for a reader to go wrong. The
+    /// payload key moved with it, from "inventory" to "strip".
+    /// </remarks>
+    public sealed class SectionStrip
     {
-        internal InventoryRow() { }
+        internal SectionStrip() { }
 
         public string SectionKey { get; internal set; }
         public string Title { get; internal set; }
@@ -128,6 +137,46 @@ namespace Win11Optimizer.Gui.Core.View
 
         /// <summary>The section's own notes, verbatim.</summary>
         public IReadOnlyList<string> Note { get; internal set; }
+    }
+
+    /// <summary>
+    /// One destination in the left rail.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// P6-C2 CUT THE RAIL RATHER THAN SHIP FOUR DEAD BUTTONS, and it comes back
+    /// with the screens it points at. EVERY ENTRY IT NAMES EXISTS, with one
+    /// exception that names itself: the receipt is not built, and it says so on
+    /// its own face rather than looking like a link that goes nowhere.
+    /// </para>
+    /// <para>
+    /// Count is the SECTION'S OWN InventoryCount and nothing else is added to
+    /// it. The four counts must never be summed into a figure spanning
+    /// sections: a service is in the startup section's inventory and in the
+    /// services section's, so 548 is not the number of things inspected on this
+    /// machine -- it counts 92 services twice. No screen shows such a total.
+    /// </para>
+    /// </remarks>
+    public sealed class RailEntry
+    {
+        internal RailEntry() { }
+
+        /// <summary>"decisions", a section key, or "receipt".</summary>
+        public string Key { get; internal set; }
+
+        public string Label { get; internal set; }
+
+        /// <summary>Cards for the decision queue; the section's own InventoryCount for a table.</summary>
+        public long Count { get; internal set; }
+
+        /// <summary>True for the queue, which wears its count as a badge rather than a tally.</summary>
+        public bool IsQueue { get; internal set; }
+
+        /// <summary>False for a destination this build does not have. It is drawn disabled and says why.</summary>
+        public bool IsBuilt { get; internal set; }
+
+        /// <summary>What to show beside an entry that is not built. Null when it is.</summary>
+        public string NotBuiltNote { get; internal set; }
     }
 
     /// <summary>A source that was not read, and why.</summary>
@@ -174,7 +223,10 @@ namespace Win11Optimizer.Gui.Core.View
         public IReadOnlyList<string> PartialSection { get; private set; }
 
         public IReadOnlyList<DecisionCard> Card { get; private set; }
-        public IReadOnlyList<InventoryRow> Inventory { get; private set; }
+        public IReadOnlyList<SectionStrip> Strip { get; private set; }
+
+        /// <summary>The left rail, in screen order. Every entry it names exists, or says it does not.</summary>
+        public IReadOnlyList<RailEntry> Rail { get; private set; }
 
         /// <summary>Sources that were Skipped or Failed. These make the scan incomplete.</summary>
         public IReadOnlyList<SourceNote> Incomplete { get; private set; }
@@ -213,7 +265,7 @@ namespace Win11Optimizer.Gui.Core.View
             };
 
             var cards = new List<DecisionCard>();
-            var inventory = new List<InventoryRow>();
+            var strip = new List<SectionStrip>();
             int rowsSeen = 0;
             int rowsWithPlan = 0;
 
@@ -234,7 +286,7 @@ namespace Win11Optimizer.Gui.Core.View
                     cards.Add(BuildCard(section, row));
                 }
 
-                inventory.Add(BuildInventoryRow(section));
+                strip.Add(BuildSectionStrip(section));
             }
 
             var incomplete = new List<SourceNote>();
@@ -264,7 +316,8 @@ namespace Win11Optimizer.Gui.Core.View
             }
 
             view.Card = cards;
-            view.Inventory = inventory;
+            view.Strip = strip;
+            view.Rail = BuildRail(result, cards.Count);
             view.Incomplete = incomplete;
             view.Refused = refused;
 
@@ -380,7 +433,63 @@ namespace Win11Optimizer.Gui.Core.View
             return null;
         }
 
-        private static InventoryRow BuildInventoryRow(SectionRecord section)
+        /// <summary>
+        /// The rail: the queue, then one entry per section in the engine's own
+        /// order, then the receipt.
+        /// </summary>
+        /// <remarks>
+        /// THE RECEIPT IS NOT BUILT AND THE RAIL SAYS SO. It was worth checking
+        /// whether it fell out of the tables for free, and it does not: the
+        /// prototype's receipt is derived from the append-only action ledger,
+        /// with an undo control per entry, and neither the ledger nor an undo
+        /// path is anywhere near this read-only shell. ReceiptText on the
+        /// payload is not it either -- it is empty on a scan with no ledger,
+        /// which is every scan this build makes, so a screen fed from it would
+        /// appear and disappear depending on the run. It is named as not built
+        /// rather than left off, because a rail that silently omits a
+        /// destination the prototype promised is the same omission this project
+        /// is built against, one level up.
+        /// </remarks>
+        private static IReadOnlyList<RailEntry> BuildRail(ResultRecord result, int cardCount)
+        {
+            var rail = new List<RailEntry>
+            {
+                new RailEntry
+                {
+                    Key = "decisions",
+                    Label = "Decisions",
+                    Count = cardCount,
+                    IsQueue = true,
+                    IsBuilt = true
+                }
+            };
+
+            foreach (SectionRecord section in result.Section)
+            {
+                rail.Add(new RailEntry
+                {
+                    Key = section.Key,
+                    Label = section.Title,
+                    Count = section.InventoryCount,
+                    IsQueue = false,
+                    IsBuilt = true
+                });
+            }
+
+            rail.Add(new RailEntry
+            {
+                Key = "receipt",
+                Label = "Receipt",
+                Count = 0,
+                IsQueue = false,
+                IsBuilt = false,
+                NotBuiltNote = "Not built yet"
+            });
+
+            return rail;
+        }
+
+        private static SectionStrip BuildSectionStrip(SectionRecord section)
         {
             string lead = section.Headline.Count > 0 ? section.Headline[0] : section.Title;
 
@@ -390,7 +499,7 @@ namespace Win11Optimizer.Gui.Core.View
                 rest.Add(section.Headline[i]);
             }
 
-            return new InventoryRow
+            return new SectionStrip
             {
                 SectionKey = section.Key,
                 Title = section.Title,

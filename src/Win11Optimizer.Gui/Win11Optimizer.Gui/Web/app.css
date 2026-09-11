@@ -53,8 +53,44 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;}
 .main{flex:1;min-width:0;display:flex;}
 .col{padding:1.15rem 1.25rem 1.4rem;min-width:0;overflow-y:auto;flex:1;}
 
+/* the left rail, back with the screens it points at */
+.rail{
+  flex:none;width:214px;background:var(--ground);border-right:1px solid var(--edge);
+  padding:.85rem .6rem;display:flex;flex-direction:column;gap:.1rem;overflow-y:auto;
+}
+/* An author display: rule beats the browser's own [hidden] rule, so hiding the
+   rail with the attribute alone left an empty 214px column down the left of the
+   scanning screen. Measured on the real window, not reasoned about. */
+.rail[hidden]{display:none;}
+.rail .grp{
+  font-family:var(--mono);font-size:.64rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);padding:.7rem .55rem .35rem;font-weight:600;
+}
+.rail button{
+  display:flex;align-items:center;gap:.5rem;width:100%;padding:.46rem .55rem;border-radius:4px;
+  font-size:.87rem;color:var(--soft);text-align:left;transition:background .12s,color .12s;
+}
+.rail button:hover{background:var(--raise);color:var(--ink);}
+.rail button.on{background:var(--raise2);color:var(--ink);box-shadow:inset 2px 0 0 var(--accent);}
+.rail button[disabled]{opacity:.5;cursor:not-allowed;background:none;color:var(--faint);}
+.rail .ct{
+  margin-left:auto;font-family:var(--mono);font-size:.72rem;
+  font-variant-numeric:tabular-nums;color:var(--faint);
+}
+.rail button.on .ct{color:var(--soft);}
+.rail .badge{
+  margin-left:auto;background:var(--attention);color:#241a05;border-radius:8px;padding:0 .34rem;
+  font-weight:700;font-size:.68rem;font-family:var(--mono);
+}
+/* A destination this build does not have says so on its own face, rather than
+   looking like a link that goes nowhere. */
+.rail .todo{margin-left:auto;font-family:var(--mono);font-size:.62rem;color:var(--faint);}
+
 h2.view{font-size:1.12rem;margin:0 0 .2rem;font-weight:600;letter-spacing:-.015em;}
-p.sub{margin:0 0 1.15rem;color:var(--soft);font-size:.87rem;max-width:74ch;}
+/* Not p.sub: a table's subtitle is the section's own headline SENTENCES, one
+   per line, so it is a div with div children rather than one paragraph. */
+.sub{margin:0 0 1.15rem;color:var(--soft);font-size:.87rem;max-width:74ch;}
+.sub div + div{margin-top:.2rem;}
 .hd{
   font-family:var(--mono);font-size:.65rem;letter-spacing:.14em;text-transform:uppercase;
   color:var(--faint);font-weight:600;margin:0 0 .6rem;
@@ -115,7 +151,7 @@ p.sub{margin:0 0 1.15rem;color:var(--soft);font-size:.87rem;max-width:74ch;}
 /* inventory strip -- the same visual weight as the cards, deliberately */
 .inv{border:1px solid var(--edge);border-radius:6px;overflow:hidden;}
 .inv .row{
-  display:grid;grid-template-columns:minmax(0,1.4fr) auto minmax(0,1.8fr);gap:1rem;
+  display:grid;grid-template-columns:minmax(0,1.4fr) auto minmax(0,1.8fr) auto;gap:1rem;
   align-items:baseline;padding:.7rem .9rem;border-bottom:1px solid var(--edge-soft);font-size:.85rem;
 }
 .inv .row:last-child{border-bottom:none;}
@@ -149,6 +185,89 @@ p.sub{margin:0 0 1.15rem;color:var(--soft);font-size:.87rem;max-width:74ch;}
 .note div + div{margin-top:.35rem;}
 
 .empty{color:var(--faint);font-size:.85rem;padding:1.4rem .4rem;line-height:1.6;}
+
+/* ---- category tables ----------------------------------------------------
+   THE HEAD OF THE SCREEN DOES NOT SCROLL AND THE ROWS DO. The largest table
+   here is 290 rows; with one scroller over the whole column the filter chips
+   would be the first thing to leave the screen, and a control you have to
+   scroll back up to reach is not a control for a list that long. So .tcol is a
+   fixed head plus .tscroll, and .tscroll is the ONLY scroller on this screen. */
+.tcol{
+  padding:1.15rem 1.25rem 0;min-width:0;flex:1;min-height:0;
+  display:flex;flex-direction:column;
+}
+.thead{flex:none;}
+.tscroll{flex:1;min-height:0;overflow:auto;padding-bottom:1.4rem;}
+
+.chips{display:flex;gap:.35rem;flex-wrap:wrap;margin:0 0 .6rem;}
+.chip{
+  font-family:var(--mono);font-size:.7rem;padding:.24rem .6rem;border-radius:3px;
+  border:1px solid var(--edge);color:var(--soft);transition:.12s;white-space:nowrap;
+}
+.chip:hover{border-color:var(--soft);color:var(--ink);}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600;}
+.chip .c{font-variant-numeric:tabular-nums;opacity:.8;margin-left:.35rem;}
+
+.find{display:flex;align-items:center;gap:.6rem;margin:0 0 .7rem;flex-wrap:wrap;}
+.find input{
+  font-family:var(--mono);font-size:.75rem;padding:.3rem .55rem;border-radius:4px;
+  border:1px solid var(--edge);background:var(--ground);color:var(--ink);min-width:20rem;
+}
+.find input::placeholder{color:var(--faint);}
+.find input:focus{outline:2px solid var(--accent);outline-offset:1px;}
+.shown{font-family:var(--mono);font-size:.72rem;color:var(--faint);font-variant-numeric:tabular-nums;}
+
+/* WIDTH IS DECIDED BY THE CONTENT, NOT BY THE WINDOW. A table squeezed to
+   100% gives an identity column sixty pixels and wraps a package name over six
+   lines, which is the same failure as truncating it wearing better manners. So
+   the table grows to what it needs, every column has a ceiling it wraps
+   within, and .tscroll scrolls sideways for the tail. */
+table{width:max-content;min-width:100%;border-collapse:collapse;font-size:.83rem;}
+th{
+  text-align:left;font-family:var(--mono);font-size:.64rem;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--faint);font-weight:600;
+  padding:.3rem .7rem .45rem 0;border-bottom:1px solid var(--edge);white-space:nowrap;
+  position:sticky;top:0;background:var(--surface);z-index:1;
+}
+th.srt{cursor:pointer;}
+th.srt:hover{color:var(--soft);}
+th.on{color:var(--accent);}
+th .ar{margin-left:.3rem;}
+td{
+  padding:.44rem .7rem .44rem 0;border-bottom:1px solid var(--edge-soft);vertical-align:top;
+  max-width:15rem;overflow-wrap:anywhere;
+}
+tbody tr:hover td{background:var(--raise);}
+td.nmc{min-width:13rem;max-width:19rem;}
+th.sfty,td:nth-child(2){white-space:nowrap;}
+.num{
+  font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums;
+  white-space:nowrap;max-width:none;
+}
+th.num{text-align:right;}
+.dim{color:var(--soft);}
+/* Not .why: the inventory strip already owns that name and these are two
+   different things on two different screens. */
+.rsn{color:var(--faint);font-size:.78rem;min-width:18rem;max-width:28rem;}
+
+/* P1. AN IDENTITY WRAPS; IT IS NEVER CUT OFF. Two rows can carry the same
+   display name and differ only in the part a truncating cell would remove --
+   the Appx package name, or the HKLM key -- so the one column that must never
+   be shortened is this one. */
+.ident{
+  font-family:var(--mono);font-size:.71rem;color:var(--faint);
+  overflow-wrap:anywhere;word-break:break-word;min-width:15rem;max-width:25rem;
+}
+.stripe-c{display:inline-block;width:3px;height:1.05em;border-radius:2px;vertical-align:-.18em;}
+td .nm{margin-left:.5rem;}
+.st-s{background:var(--safe);} .st-a{background:var(--attention);}
+.st-r{background:var(--refuse);} .st-n{background:var(--edge);}
+
+/* the cross-reference: this object is drawn in another table too, and that is
+   all it says. It is not a link and nothing here acts on the other table. */
+.also{font-family:var(--mono);font-size:.63rem;color:var(--faint);display:block;margin-top:.15rem;}
+
+.tnone{color:var(--faint);font-size:.85rem;padding:1.6rem .2rem;line-height:1.6;}
 
 /* action bar */
 .abar{

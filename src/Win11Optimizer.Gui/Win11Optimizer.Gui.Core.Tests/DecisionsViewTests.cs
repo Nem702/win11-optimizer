@@ -149,9 +149,9 @@ namespace Win11Optimizer.Gui.Core.Tests
         {
             DecisionsView view = Golden();
 
-            Assert.Equal(4, view.Inventory.Count);
+            Assert.Equal(4, view.Strip.Count);
 
-            InventoryRow apps = view.Inventory.Single(i => i.SectionKey == "InstalledApps");
+            SectionStrip apps = view.Strip.Single(i => i.SectionKey == "InstalledApps");
 
             // The sentence the whole screen is built around, and it is the
             // engine's, not this shell's.
@@ -169,7 +169,7 @@ namespace Win11Optimizer.Gui.Core.Tests
                 "\"EmptyText\":\"No service is flagged.\",\"RowCount\":1,\"Row\":[{\"Number\":1,\"SectionKey\":\"Services\"",
                 "\"EmptyText\":\"No service is flagged.\",\"RowCount\":0,\"Row\":[],\"Unused\":[{\"Number\":1,\"SectionKey\":\"Services\"");
 
-            InventoryRow services = View(line).Inventory.Single(i => i.SectionKey == "Services");
+            SectionStrip services = View(line).Strip.Single(i => i.SectionKey == "Services");
 
             Assert.Equal(0, services.DecisionCount);
 
@@ -181,7 +181,7 @@ namespace Win11Optimizer.Gui.Core.Tests
         [Fact]
         public void A_section_with_rows_has_no_empty_text_to_show()
         {
-            Assert.All(Golden().Inventory, i => Assert.Null(i.EmptyText));
+            Assert.All(Golden().Strip, i => Assert.Null(i.EmptyText));
         }
 
         [Fact]

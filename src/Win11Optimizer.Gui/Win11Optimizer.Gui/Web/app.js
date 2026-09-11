@@ -17,7 +17,15 @@
 (function () {
   "use strict";
 
-  var state = { screen: "scanning", data: null, selected: {}, count: 0 };
+  // screen is what the host last said the run is doing. view is where in that
+  // screen the rail has been pointed -- "decisions", or a section key.
+  var state = { screen: "scanning", view: "decisions", data: null, selected: {}, count: 0 };
+
+  // Section key -> the table the host sent, and -> the nodes a filter or a
+  // sort has to touch. Both are emptied by the render that throws their DOM
+  // away, for the reason cardNode is.
+  var tableByKey = {};
+  var tableNode = {};
 
   // Card key -> the nodes a selection change has to touch. Filled in as cards
   // are painted and emptied by the render that throws their DOM away, so it
@@ -137,6 +145,53 @@
     return col;
   }
 
+  // ---- the rail -----------------------------------------------------------
+
+  // P6-C2 CUT THE RAIL RATHER THAN SHIP FOUR DEAD BUTTONS. It is back with the
+  // screens it points at, and the one destination this build does not have is
+  // drawn disabled with the reason on it -- which is the same call the
+  // disabled "Review and apply" in the action bar is, and the opposite of what
+  // the dropped rail would have been.
+  function paintRail() {
+    var rail = document.getElementById("rail");
+    clear(rail);
+
+    var d = state.data;
+    if (!d || !d.rail) { return; }
+
+    d.rail.forEach(function (r) {
+      if (r.Key === "receipt") { rail.appendChild(el("div", "grp", "Records")); }
+
+      var button = el("button", state.view === r.Key ? "on" : null);
+      button.appendChild(el("span", null, r.Label));
+
+      if (!r.IsBuilt) {
+        button.appendChild(el("span", "todo", r.NotBuiltNote));
+        button.disabled = true;
+      } else if (r.IsQueue) {
+        if (r.Count) { button.appendChild(el("span", "badge", String(r.Count))); }
+        button.addEventListener("click", function () { go(r.Key); });
+      } else {
+        // THE SECTION'S OWN COUNT AND NOTHING ADDED TO IT. These four are never
+        // summed anywhere: a service is in the startup section's inventory and
+        // in the services section's, so the four added together counts the
+        // services twice and is not the number of things inspected.
+        button.appendChild(el("span", "ct", String(r.Count)));
+        button.addEventListener("click", function () { go(r.Key); });
+      }
+
+      rail.appendChild(button);
+    });
+  }
+
+  // Going somewhere else IS a new screen, so it renders whole and starts at the
+  // top. That is the distinction the scroll rule turns on: a filter or a
+  // selection changes the screen that is there, and navigation replaces it.
+  function go(view) {
+    state.view = view;
+    render();
+  }
+
   // ---- decisions ----------------------------------------------------------
 
   // WHAT "SELECTED" LOOKS LIKE, DECIDED IN ONE PLACE. Painting a card and
@@ -244,7 +299,7 @@
     return node;
   }
 
-  function paintInventoryRow(i) {
+  function paintSectionStrip(i) {
     var row = el("div", "row");
     row.appendChild(el("span", "lead", i.Lead));
     row.appendChild(el("span", "n",
@@ -258,6 +313,13 @@
     }
     row.appendChild(why);
 
+    // The strip says what a list looked at; this is how you see the list. It
+    // goes to a screen that exists, which is the whole difference between it
+    // and the four buttons P6-C2 took out.
+    var all = el("button", "btn", "Show all");
+    all.addEventListener("click", function () { go(i.SectionKey); });
+    row.appendChild(all);
+
     return row;
   }
 
@@ -266,7 +328,7 @@
 
     col.appendChild(el("h2", "view",
       (d.card.length === 1 ? "1 decision" : d.card.length + " decisions") +
-      ", from " + d.inventory.length + " lists"));
+      ", from " + d.strip.length + " lists"));
     col.appendChild(el("p", "sub",
       "Everything below was measured on this PC. Nothing has been changed, and nothing on " +
       "this screen is carried out - this build reads."));
@@ -285,7 +347,7 @@
     // under them.
     col.appendChild(el("p", "hd", "Inspected - nothing to decide"));
     var inv = el("div", "inv");
-    d.inventory.forEach(function (i) { inv.appendChild(paintInventoryRow(i)); });
+    d.strip.forEach(function (i) { inv.appendChild(paintSectionStrip(i)); });
     col.appendChild(inv);
 
     if (d.plansWereSkipped) {
@@ -327,7 +389,7 @@
     //
     // The two blocks above are not notes and are not folded in here: one is a
     // refusal this project made and the other is what could not be read.
-    (d.inventory || []).forEach(function (i) {
+    (d.strip || []).forEach(function (i) {
       var note = i.Note || [];
       if (!note.length) { return; }
 
@@ -338,6 +400,227 @@
     });
 
     return col;
+  }
+
+  // ---- the category tables ------------------------------------------------
+
+  // Four classes, four looks. Protected and Not offered are DIFFERENT LOOKS and
+  // not one "not a decision" look: a rule held one back on purpose and nothing
+  // was ever said about the other, and the console collapsing both into silence
+  // is one of the things this window exists to fix.
+  var CLASS_STRIPE = ["st-s", "st-a", "st-r", "st-n"];
+  var CLASS_PILL = ["p-safe", "p-rev", "p-stop", "p-info"];
+
+  function tableRowNode(t, index) {
+    var r = t.Row[index];
+    var tr = document.createElement("tr");
+
+    t.Column.forEach(function (col, i) {
+      var td = document.createElement("td");
+
+      if (i === 0) {
+        // The stripe is its own node and the name is its own node, so the
+        // engine's string is not concatenated with anything on its way to the
+        // DOM. The gap between them is a margin, not a space in the text.
+        td.appendChild(el("span", "stripe-c " + CLASS_STRIPE[r.ClassIndex]));
+        td.appendChild(el("span", "nm", r.Cell[i]));
+
+        // The cross-reference: this object is in another table as well. It
+        // says so and does nothing else -- it does not hide the row here, it
+        // is not a link, and no control in either table acts on the other.
+        if (r.AlsoIn && r.AlsoIn.length) {
+          td.appendChild(el("span", "also", "also in " + r.AlsoIn.join(", ")));
+        }
+
+        td.className = "nmc";
+        tr.appendChild(td);
+
+        // SAFETY IS THE SECOND COLUMN AND NOT THE LAST ONE. These tables are
+        // wider than the window -- an identity is not allowed to be shortened,
+        // so the columns after it run off the right edge -- and the class is
+        // the one thing that must be readable without scrolling sideways to
+        // find it.
+        var safety = document.createElement("td");
+        safety.appendChild(el("span", "pill " + CLASS_PILL[r.ClassIndex], r.ClassLabel));
+        tr.appendChild(safety);
+        return;
+      }
+
+      td.textContent = r.Cell[i];
+
+      if (col.IsNumeric) { td.className = "num dim"; }
+      else if (col.IsIdentity) { td.className = "ident"; }
+      else if (col.IsReason) { td.className = "rsn"; }
+      else { td.className = "dim"; }
+
+      tr.appendChild(td);
+    });
+
+    return tr;
+  }
+
+  function fillTableBody(t, node) {
+    clear(node.body);
+    t.Visible.forEach(function (index) {
+      node.body.appendChild(tableRowNode(t, index));
+    });
+
+    node.shown.textContent = t.Visible.length === t.Row.length
+      ? t.Row.length + " rows"
+      : "showing " + t.Visible.length + " of " + t.Row.length;
+
+    node.chip.forEach(function (c) {
+      c.node.className = "chip" + (c.index === t.ClassIndex ? " on" : "");
+    });
+
+    node.head.forEach(function (h) {
+      var on = h.index === t.SortColumn;
+      h.node.className = (h.sortable ? "srt" : "") + (h.numeric ? " num" : "") + (on ? " on" : "");
+      // A plain ASCII arrow: every file in this project is ASCII, and a
+      // triangle glyph here would be one character above 0x7E.
+      h.arrow.textContent = on ? (t.Descending ? "v" : "^") : "";
+    });
+
+    if (node.none) {
+      node.none.hidden = t.Visible.length > 0;
+    }
+  }
+
+  function paintTable(key) {
+    var t = tableByKey[key];
+    var col = el("div", "tcol");
+
+    if (!t) {
+      col.appendChild(el("p", "tnone", "That list is not in this scan."));
+      return col;
+    }
+
+    var head = el("div", "thead");
+    head.appendChild(el("h2", "view", t.Title));
+
+    // The section's own opening sentences, verbatim, exactly as the strip under
+    // the queue carries them. Nothing on this screen is worded here.
+    var sub = el("div", "sub");
+    (t.Headline || []).forEach(function (line) { sub.appendChild(el("div", null, line)); });
+    head.appendChild(sub);
+
+    var chips = el("div", "chips");
+    var chipNode = [];
+    (t.Chip || []).forEach(function (c) {
+      var button = el("button", "chip");
+      button.appendChild(el("span", null, c.Label));
+      button.appendChild(el("span", "c", String(c.Count)));
+      button.addEventListener("click", function () { sendTable(key, null, c.ClassIndex); });
+      chips.appendChild(button);
+      chipNode.push({ node: button, index: c.ClassIndex });
+    });
+    head.appendChild(chips);
+
+    var find = el("div", "find");
+    var box = document.createElement("input");
+    box.type = "text";
+    box.placeholder = "Filter by name or identity";
+    box.value = t.Query || "";
+    box.addEventListener("input", function () { sendTable(key, box.value, t.ClassIndex); });
+    find.appendChild(box);
+    var shown = el("span", "shown");
+    find.appendChild(shown);
+    head.appendChild(find);
+
+    // Provenance, and only where there is any. Both of these are zero on every
+    // un-elevated run measured so far, and neither may be silent if it is not:
+    // a flagged row this section's inventory does not hold would otherwise be
+    // a finding that is simply missing from its own table.
+    if (t.FindingNotInInventory && t.FindingNotInInventory.length) {
+      head.appendChild(el("div", "note warn",
+        t.FindingNotInInventory.length + " flagged " +
+        (t.FindingNotInInventory.length === 1 ? "row is" : "rows are") +
+        " not in this list's inventory, so they are not drawn below: " +
+        t.FindingNotInInventory.join(", ") + ". They are still in the queue."));
+    }
+
+    if (t.FlaggedWithNoRow) {
+      head.appendChild(el("div", "note warn",
+        t.FlaggedWithNoRow + " flagged " + (t.FlaggedWithNoRow === 1 ? "entry" : "entries") +
+        " below could not be matched to a row, and " +
+        (t.FlaggedWithNoRow === 1 ? "is" : "are") + " shown as needing review."));
+    }
+
+    col.appendChild(head);
+
+    var scroll = el("div", "tscroll");
+    var table = document.createElement("table");
+    var thead = document.createElement("thead");
+    var hrow = document.createElement("tr");
+    var headNode = [];
+
+    t.Column.forEach(function (c, i) {
+      var th = document.createElement("th");
+      th.appendChild(el("span", null, c.Label));
+      var arrow = el("span", "ar");
+      th.appendChild(arrow);
+
+      if (c.IsSortable) {
+        th.addEventListener("click", function () { send({ action: "sort", key: key, column: i }); });
+      }
+
+      hrow.appendChild(th);
+      headNode.push({ node: th, arrow: arrow, index: i, sortable: c.IsSortable, numeric: c.IsNumeric });
+
+      // The class column goes in beside the name, where the rows put it. It is
+      // not one of the engine's columns and it has no sort of its own -- the
+      // chips above the table are the control for it.
+      if (i === 0) { hrow.appendChild(el("th", "sfty", "Safety")); }
+    });
+
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+
+    var body = document.createElement("tbody");
+    table.appendChild(body);
+    scroll.appendChild(table);
+
+    var none = el("p", "tnone", "Nothing in this list matches those filters.");
+    scroll.appendChild(none);
+
+    col.appendChild(scroll);
+
+    tableNode[key] = { body: body, chip: chipNode, head: headNode, shown: shown, none: none };
+    fillTableBody(t, tableNode[key]);
+
+    return col;
+  }
+
+  // WHAT WAS TYPED OR CLICKED, AND NOTHING ELSE. Which rows that leaves, in
+  // what order, and what the text is matched against are all worked out in
+  // Gui.Core -- this asks, and paints the answer.
+  function sendTable(key, query, classIndex) {
+    var t = tableByKey[key];
+    send({
+      action: "table",
+      key: key,
+      query: query === null || query === undefined ? (t ? t.Query : "") : query,
+      classIndex: classIndex
+    });
+  }
+
+  // A FILTER OR A SORT CHANGE UPDATES THE SCREEN THAT IS ALREADY THERE, for the
+  // same reason a selection does: .tscroll is the scroller, and a render()
+  // would build a new one at the top and take the focus off the text box that
+  // was being typed into. Only the rows, the chips, the arrows and the count
+  // line change.
+  function applyTable(d) {
+    var t = tableByKey[d.key];
+    if (!t) { return; }
+
+    t.Query = d.query;
+    t.ClassIndex = d.classIndex;
+    t.SortColumn = d.sortColumn;
+    t.Descending = d.descending;
+    t.Visible = d.visible || [];
+
+    var node = tableNode[d.key];
+    if (node) { fillTableBody(t, node); }
   }
 
   // ---- failure ------------------------------------------------------------
@@ -418,21 +701,38 @@
 
   // ---- render -------------------------------------------------------------
 
+  // THE ONLY THREE THINGS THAT CALL THIS are the first paint, a host message
+  // carrying a new screen (scanning, decisions or failure -- each one a
+  // different run state), and rail navigation. Every one of them is a new
+  // screen rather than a change to the one on display, which is the rule
+  // report 21 section 13.1 was written to keep: a render() throws away the
+  // scroller, so anything that only CHANGES what is on screen -- a selection,
+  // a filter, a sort -- updates in place instead.
   function render() {
     var main = document.getElementById("main");
+    var rail = document.getElementById("rail");
     clear(main);
 
-    // The map dies with the nodes it points at, in the same statement pair.
+    // The maps die with the nodes they point at, in the same statement pair.
     cardNode = {};
+    tableNode = {};
 
     if (state.screen === "decisions") {
       paintTitleBar(state.data);
-      main.appendChild(paintDecisions(state.data));
+      rail.hidden = false;
+      paintRail();
+      main.appendChild(state.view === "decisions"
+        ? paintDecisions(state.data)
+        : paintTable(state.view));
     } else if (state.screen === "failure") {
       paintTitleBar(null);
+      rail.hidden = true;
+      clear(rail);
       main.appendChild(paintFailure(state.data));
     } else {
       paintTitleBar(null);
+      rail.hidden = true;
+      clear(rail);
       main.appendChild(paintScanning(state.data || { phase: [], fraction: 0 }));
     }
 
@@ -473,9 +773,23 @@
         return;
       }
 
+      // Neither is a table message: it is the answer to one control on one
+      // table, and the screen it belongs to is already drawn.
+      if (d.screen === "table") {
+        applyTable(d);
+        return;
+      }
+
       // A decisions message is a new scan, not a change to this one, so it
-      // does render the screen from nothing.
-      if (d.screen === "decisions") { setSelected(d.selected); }
+      // does render the screen from nothing -- and the rail goes back to the
+      // queue, because the screen the rail was pointing at is a screen from a
+      // scan that is over.
+      if (d.screen === "decisions") {
+        setSelected(d.selected);
+        state.view = "decisions";
+        tableByKey = {};
+        (d.table || []).forEach(function (t) { tableByKey[t.SectionKey] = t; });
+      }
 
       state.screen = d.screen;
       state.data = d;

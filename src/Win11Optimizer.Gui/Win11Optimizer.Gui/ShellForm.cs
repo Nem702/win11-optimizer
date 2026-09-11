@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -35,6 +36,7 @@ namespace Win11Optimizer.Gui
         private readonly CancellationTokenSource _cancel = new CancellationTokenSource();
 
         private DecisionsView _decisions;
+        private CategoryTableSet _tables;
         private bool _pageReady;
 
         public ShellForm(CommandLine commandLine)
@@ -205,6 +207,7 @@ namespace Win11Optimizer.Gui
                 }
 
                 _decisions = DecisionsView.Build(outcome.Result);
+                _tables = CategoryTableSet.Build(outcome.Result);
                 _selection.Retain(_decisions.Card);
                 Post(DecisionsPayload());
             });
@@ -237,6 +240,16 @@ namespace Win11Optimizer.Gui
             string action = Convert.ToString(message["action"]);
             string key = message.ContainsKey("key") ? Convert.ToString(message["key"]) : null;
 
+            // A TABLE CONTROL IS ANSWERED BY THE TABLE, NOT BY THE SELECTION.
+            // The page says what was typed, clicked or sorted on; which rows
+            // that leaves, and in what order, is worked out in Gui.Core and
+            // comes back as a list of indices for the page to paint.
+            if ((action == "table" || action == "sort") && key != null)
+            {
+                PostTable(action, key, message);
+                return;
+            }
+
             // The page sends what a person did. What that means is worked out
             // by SelectionState, which is on the tested side of the line.
             if (action == "toggle" && key != null)
@@ -257,6 +270,68 @@ namespace Win11Optimizer.Gui
             }
 
             Post(SelectionPayload());
+        }
+
+        /// <summary>
+        /// Applies one table's three controls and answers with what is now
+        /// visible. A message naming a table that is not there is dropped: the
+        /// page can only name one it was given, so a name that does not match
+        /// is a message this build did not send.
+        /// </summary>
+        private void PostTable(string action, string key, IDictionary<string, object> message)
+        {
+            if (_tables == null)
+            {
+                return;
+            }
+
+            CategoryTable table = _tables.Find(key);
+            if (table == null)
+            {
+                return;
+            }
+
+            if (action == "sort")
+            {
+                // A heading was clicked. What that does to the order is the
+                // table's rule, not the page's.
+                table.ToggleSort(ReadInt(message, "column", CategoryTable.SortColumnNone));
+            }
+            else
+            {
+                table.Apply(
+                    message.ContainsKey("query") ? Convert.ToString(message["query"]) : null,
+                    ReadInt(message, "classIndex", CategoryTable.ClassIndexAll),
+                    table.SortColumn,
+                    table.Descending);
+            }
+
+            Post(TablePayload(table));
+        }
+
+        private static int ReadInt(IDictionary<string, object> message, string name, int fallback)
+        {
+            if (!message.ContainsKey(name) || message[name] == null)
+            {
+                return fallback;
+            }
+
+            try
+            {
+                return Convert.ToInt32(message[name], CultureInfo.InvariantCulture);
+            }
+            catch (Exception)
+            {
+                // A value that is not a number is not repaired into one. The
+                // control falls back to its off position rather than to some
+                // filter nobody asked for.
+                return fallback;
+            }
+        }
+
+        private static bool ReadBool(IDictionary<string, object> message, string name)
+        {
+            return message.ContainsKey(name) && message[name] is bool && (bool)message[name];
         }
 
         private DecisionCard FindCard(string key)
@@ -303,10 +378,32 @@ namespace Win11Optimizer.Gui
                 partialSection = _decisions.PartialSection,
                 plansWereSkipped = _decisions.PlansWereSkipped,
                 card = _decisions.Card,
-                inventory = _decisions.Inventory,
+                strip = _decisions.Strip,
+                rail = _decisions.Rail,
+                table = _tables != null ? _tables.Table : null,
                 incomplete = _decisions.Incomplete,
                 refused = _decisions.Refused,
                 selected = SelectedKeys()
+            };
+        }
+
+        /// <summary>
+        /// One table's answer to one control change. It carries the indices and
+        /// the control state and NOT the rows: the page already holds those, and
+        /// posting several hundred of them back on every keystroke would be
+        /// sending the table again to say which part of it to show.
+        /// </summary>
+        private static object TablePayload(CategoryTable table)
+        {
+            return new
+            {
+                screen = "table",
+                key = table.SectionKey,
+                query = table.Query,
+                classIndex = table.ClassIndex,
+                sortColumn = table.SortColumn,
+                descending = table.Descending,
+                visible = table.Visible
             };
         }
 
